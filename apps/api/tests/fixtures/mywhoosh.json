@@ -1,0 +1,16 @@
+{
+  "id": "mywhoosh-001",
+  "name": "Indoor Tempo",
+  "type": "Ride",
+  "source": "MyWhoosh",
+  "trainer": true,
+  "start_date": "2026-09-28T16:00:25Z",
+  "moving_time": 4192,
+  "distance": 36250,
+  "total_elevation_gain": 210,
+  "average_watts": 203,
+  "weighted_average_watts": 209,
+  "average_cadence": 90,
+  "icu_joules": 850000,
+  "icu_training_load": 70
+}

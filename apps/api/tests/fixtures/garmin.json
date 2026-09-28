@@ -1,0 +1,16 @@
+{
+  "id": "garmin-001",
+  "name": "Indoor Tempo",
+  "type": "Ride",
+  "source": "Garmin",
+  "trainer": true,
+  "start_date": "2026-09-28T16:00:00Z",
+  "moving_time": 4200,
+  "average_watts": 201,
+  "weighted_average_watts": 208,
+  "average_heartrate": 144,
+  "max_heartrate": 173,
+  "average_cadence": 91,
+  "icu_joules": 844200,
+  "icu_training_load": 69
+}

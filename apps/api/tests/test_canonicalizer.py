@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from app.services.canonicalizer import canonicalize
@@ -31,3 +32,27 @@ def test_fingerprint_is_stable_when_second_source_arrives():
     single = canonicalize([garmin], source_preference="auto")
     merged = canonicalize([garmin, mywhoosh], source_preference="auto")
     assert single.fingerprint == merged.fingerprint
+
+
+def test_primary_prefers_garmin_when_virtual_source_only_adds_route_metrics():
+    garmin = replace(
+        load("garmin.json"),
+        recording_source="GARMIN_CONNECT",
+    )
+    mywhoosh = replace(
+        load("mywhoosh.json"),
+        recording_source="OAUTH_CLIENT",
+        avg_hr_bpm=garmin.avg_hr_bpm,
+        max_hr_bpm=garmin.max_hr_bpm,
+    )
+
+    result = canonicalize([garmin, mywhoosh], source_preference="auto")
+
+    assert result.primary_provider_activity_id == "garmin-001"
+
+    provenance = {
+        m.metric_name: m.source_provider_activity_id
+        for m in result.metrics
+    }
+    assert provenance["avg_hr_bpm"] == "garmin-001"
+    assert provenance["distance_m"] == "mywhoosh-001"

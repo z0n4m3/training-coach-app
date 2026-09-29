@@ -25,6 +25,15 @@ METRICS = {
 PHYSIOLOGY = {"avg_power_w", "normalized_power_w", "avg_hr_bpm", "max_hr_bpm", "avg_cadence_rpm", "work_kj", "training_load"}
 VIRTUAL = {"distance_m", "elevation_m"}
 
+PRIMARY_SIGNAL_METRICS = (
+    "avg_power_w",
+    "normalized_power_w",
+    "avg_hr_bpm",
+    "max_hr_bpm",
+    "avg_cadence_rpm",
+    "work_kj",
+)
+
 
 @dataclass(slots=True)
 class CanonicalResult:
@@ -64,12 +73,32 @@ def _metric_score(activity: ActivitySnapshot, metric: str, preference: str) -> f
     return min(1.0, score)
 
 
+def _primary_rank(activity: ActivitySnapshot) -> tuple[int, int, float]:
+    """Rank the source representing the training recording as a whole.
+
+    Route/virtual metrics such as distance must not make a virtual platform
+    the PRIMARY source when another recording contains equally rich
+    physiological data. Metric-level provenance is still decided separately.
+    """
+    signal_count = sum(
+        getattr(activity, metric) is not None
+        for metric in PRIMARY_SIGNAL_METRICS
+    )
+    source = (activity.recording_source or "").lower()
+
+    # Dedicated Garmin recording wins a tie in physiological richness.
+    # This is only a tie-breaker; a genuinely richer source can still win.
+    garmin_tiebreaker = 1 if "garmin" in source else 0
+
+    return signal_count, garmin_tiebreaker, _completeness(activity)
+
+
 def canonicalize(activities: Iterable[ActivitySnapshot], source_preference: str = "auto") -> CanonicalResult:
     items = list(activities)
     if not items:
         raise ValueError("At least one activity is required")
 
-    primary = max(items, key=lambda a: (_completeness(a), 1 if "garmin" in (a.recording_source or "").lower() else 0))
+    primary = max(items, key=_primary_rank)
     metrics: list[MetricChoice] = []
     values: dict[str, float | None] = {}
 

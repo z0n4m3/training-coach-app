@@ -5,7 +5,14 @@ from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
 from app.db.base import Base
-from app.models.entities import Athlete, CanonicalSession, SessionMetricSource, SourceActivity, User
+from app.models.entities import (
+    Athlete,
+    CanonicalSession,
+    CanonicalSessionSource,
+    SessionMetricSource,
+    SourceActivity,
+    User,
+)
 import app.services.sync_service as sync_module
 from app.services.sync_service import IntervalsSyncService
 
@@ -58,13 +65,16 @@ def test_late_duplicate_rebuilds_one_canonical_session(monkeypatch):
     FakeIntervalsClient.batches = [[payload("garmin.json")], [payload("garmin.json"), payload("mywhoosh.json")]]
     first = IntervalsSyncService(db).sync(athlete.id, days=7)
     assert first["source_activities"] == 1
-    assert db.scalar(select(CanonicalSession)).duplicate_status == "single"
+    first_canonical = db.scalar(select(CanonicalSession))
+    assert first_canonical.duplicate_status == "single"
+    first_canonical_id = first_canonical.id
 
     # Second sync sees the same physical workout from two recording sources.
     second = IntervalsSyncService(db).sync(athlete.id, days=7)
     assert second["source_activities"] == 2
     canonicals = list(db.scalars(select(CanonicalSession)))
     assert len(canonicals) == 1
+    assert canonicals[0].id == first_canonical_id
     assert canonicals[0].duplicate_status == "merged"
     assert len(list(db.scalars(select(SourceActivity)))) == 2
 
@@ -76,3 +86,35 @@ def test_late_duplicate_rebuilds_one_canonical_session(monkeypatch):
 
     assert sources_by_metric["avg_hr_bpm"] == "garmin-001"
     assert sources_by_metric["distance_m"] == "mywhoosh-001"
+
+
+def test_repeated_sync_is_idempotent_and_preserves_canonical_identity(monkeypatch):
+    db = make_db()
+    athlete = make_athlete(db)
+    monkeypatch.setattr(sync_module, "IntervalsClient", FakeIntervalsClient)
+
+    batch = [payload("garmin.json"), payload("mywhoosh.json")]
+    FakeIntervalsClient.batches = [batch, batch]
+
+    first = IntervalsSyncService(db).sync(athlete.id, days=7)
+    assert first["source_activities"] == 2
+
+    canonicals = list(db.scalars(select(CanonicalSession)))
+    assert len(canonicals) == 1
+    canonical_id = canonicals[0].id
+
+    source_count = len(list(db.scalars(select(SourceActivity))))
+    link_count = len(list(db.scalars(select(CanonicalSessionSource))))
+    metric_count = len(list(db.scalars(select(SessionMetricSource))))
+
+    second = IntervalsSyncService(db).sync(athlete.id, days=7)
+    assert second["source_activities"] == 2
+
+    canonicals = list(db.scalars(select(CanonicalSession)))
+    assert len(canonicals) == 1
+    assert canonicals[0].id == canonical_id
+
+    assert len(list(db.scalars(select(SourceActivity)))) == source_count == 2
+    assert len(list(db.scalars(select(CanonicalSessionSource)))) == link_count == 2
+    assert len(list(db.scalars(select(SessionMetricSource)))) == metric_count
+    assert metric_count > 0

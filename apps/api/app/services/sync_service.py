@@ -67,25 +67,24 @@ class IntervalsSyncService:
 
         self.db.flush()
 
-        # Rebuild canonical sessions touched by this sync window. This makes late-arriving
-        # duplicate recordings (e.g. MyWhoosh after Garmin) collapse into the existing
-        # physical session instead of leaving a stale single-source canonical row.
+        # Remember canonical sessions touched by this sync, but do not delete them up
+        # front. Stable CanonicalSession IDs are important because later feedback,
+        # analyses and plan/execution links will reference them.
         source_ids = [row.id for row in source_rows]
+        affected_canonical_ids: set[uuid.UUID] = set()
         if source_ids:
-            affected_canonical_ids = list(
+            affected_canonical_ids = set(
                 self.db.scalars(
                     select(CanonicalSessionSource.canonical_session_id).where(
                         CanonicalSessionSource.source_activity_id.in_(source_ids)
                     )
                 )
             )
-            if affected_canonical_ids:
-                self.db.execute(delete(CanonicalSession).where(CanonicalSession.id.in_(affected_canonical_ids)))
-                self.db.flush()
 
         groups = build_groups(snapshots, settings.duplicate_auto_merge_threshold)
         canonical_count = 0
         merged_count = 0
+        rebuilt_canonical_ids: set[uuid.UUID] = set()
 
         for indexes in groups:
             group_snapshots = [snapshots[i] for i in indexes]
@@ -114,6 +113,8 @@ class IntervalsSyncService:
             canonical.duplicate_status = result.duplicate_status
             for metric, value in result.values.items():
                 setattr(canonical, metric, value)
+
+            rebuilt_canonical_ids.add(canonical.id)
 
             self.db.execute(delete(CanonicalSessionSource).where(CanonicalSessionSource.canonical_session_id == canonical.id))
             self.db.execute(delete(SessionMetricSource).where(SessionMetricSource.canonical_session_id == canonical.id))
@@ -154,6 +155,17 @@ class IntervalsSyncService:
             canonical_count += 1
             if len(group_snapshots) > 1:
                 merged_count += 1
+
+        # If an activity changed enough to produce a different physical-session
+        # fingerprint, remove only the now-obsolete canonical rows. Canonicals whose
+        # identity is unchanged keep their original UUID.
+        stale_canonical_ids = affected_canonical_ids - rebuilt_canonical_ids
+        if stale_canonical_ids:
+            self.db.execute(
+                delete(CanonicalSession).where(
+                    CanonicalSession.id.in_(stale_canonical_ids)
+                )
+            )
 
         self.db.commit()
         return {

@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: training
+          POSTGRES_PASSWORD: training
+          POSTGRES_DB: training
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U training -d training"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgresql+psycopg://training:training@127.0.0.1:5432/training
+      INTERVALS_BASE_URL: https://intervals.icu/api/v1
+      INTERVALS_API_KEY: ""
+      INTERVALS_ATHLETE_ID: "0"
+      DUPLICATE_AUTO_MERGE_THRESHOLD: "0.90"
+      DUPLICATE_REVIEW_THRESHOLD: "0.70"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./apps/api[dev]"
+
+      - name: Run unit tests
+        working-directory: apps/api
+        run: pytest
+
+      - name: Run database migrations
+        working-directory: apps/api
+        run: alembic upgrade head
+
+      - name: API smoke test
+        working-directory: apps/api
+        run: |
+          python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/api.log 2>&1 &
+          API_PID=$!
+          trap 'kill $API_PID 2>/dev/null || true' EXIT
+
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:8000/health; then
+              exit 0
+            fi
+            sleep 1
+          done
+
+          cat /tmp/api.log
+          exit 1
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install frontend
+        working-directory: apps/web
+        run: npm install
+
+      - name: Build frontend
+        working-directory: apps/web
+        run: npm run build

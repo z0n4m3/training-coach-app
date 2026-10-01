@@ -317,3 +317,132 @@ def test_two_existing_canonicals_can_collapse_into_one_stable_session(
     } == {
         final_canonicals[0].id
     }
+
+
+def test_previously_merged_session_can_split_without_losing_source(
+    monkeypatch,
+):
+    db = make_db()
+    athlete = make_athlete(db)
+
+    monkeypatch.setattr(
+        sync_module,
+        "IntervalsClient",
+        FakeIntervalsClient,
+    )
+
+    garmin = payload("garmin.json")
+    mywhoosh = payload("mywhoosh.json")
+
+    mywhoosh_separate = payload("mywhoosh.json")
+    mywhoosh_separate["start_date"] = (
+        "2026-09-28T17:00:25Z"
+    )
+
+    # First sync: both recordings describe one physical session.
+    # Second sync: Intervals correction shows that MyWhoosh actually
+    # belongs to a separate session.
+    #
+    # Put MyWhoosh first deliberately: source ordering must not decide
+    # which physical session keeps the previous canonical identity.
+    FakeIntervalsClient.batches = [
+        [
+            garmin,
+            mywhoosh,
+        ],
+        [
+            mywhoosh_separate,
+            garmin,
+        ],
+    ]
+
+    IntervalsSyncService(db).sync(
+        athlete.id,
+        days=7,
+    )
+
+    first_canonicals = list(
+        db.scalars(
+            select(CanonicalSession)
+        )
+    )
+
+    assert len(first_canonicals) == 1
+
+    original_canonical_id = first_canonicals[0].id
+
+    first_links = list(
+        db.scalars(
+            select(CanonicalSessionSource)
+        )
+    )
+
+    assert len(first_links) == 2
+
+    IntervalsSyncService(db).sync(
+        athlete.id,
+        days=7,
+    )
+
+    final_canonicals = list(
+        db.scalars(
+            select(CanonicalSession)
+        )
+    )
+
+    assert len(final_canonicals) == 2
+
+    final_ids = {
+        canonical.id
+        for canonical in final_canonicals
+    }
+
+    assert original_canonical_id in final_ids
+
+    sources = {
+        source.provider_activity_id: source
+        for source in db.scalars(
+            select(SourceActivity)
+        )
+    }
+
+    links = list(
+        db.scalars(
+            select(CanonicalSessionSource)
+        )
+    )
+
+    assert len(links) == 2
+
+    source_ids_in_links = [
+        link.source_activity_id
+        for link in links
+    ]
+
+    assert len(set(source_ids_in_links)) == 2
+
+    garmin_link = next(
+        link
+        for link in links
+        if link.source_activity_id
+        == sources["garmin-001"].id
+    )
+
+    mywhoosh_link = next(
+        link
+        for link in links
+        if link.source_activity_id
+        == sources["mywhoosh-001"].id
+    )
+
+    # Garmin was the PRIMARY source of the previously merged session,
+    # so that physical session retains the old stable UUID.
+    assert (
+        garmin_link.canonical_session_id
+        == original_canonical_id
+    )
+
+    assert (
+        mywhoosh_link.canonical_session_id
+        != original_canonical_id
+    )

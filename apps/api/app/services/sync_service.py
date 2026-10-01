@@ -135,12 +135,14 @@ class IntervalsSyncService:
             uuid.UUID,
             set[uuid.UUID],
         ] = {}
+        previous_primary_source_ids: set[uuid.UUID] = set()
 
         if source_ids:
             previous_links = self.db.execute(
                 select(
                     CanonicalSessionSource.source_activity_id,
                     CanonicalSessionSource.canonical_session_id,
+                    CanonicalSessionSource.role,
                 ).where(
                     CanonicalSessionSource.source_activity_id.in_(
                         source_ids
@@ -148,17 +150,49 @@ class IntervalsSyncService:
                 )
             ).all()
 
-            for source_id, canonical_id in previous_links:
+            for source_id, canonical_id, role in previous_links:
                 affected_canonical_ids.add(canonical_id)
                 previous_canonical_ids_by_source.setdefault(
                     source_id,
                     set(),
                 ).add(canonical_id)
 
-        groups = build_groups(snapshots, settings.duplicate_auto_merge_threshold)
+                if role == "PRIMARY":
+                    previous_primary_source_ids.add(source_id)
+
+        groups = build_groups(
+            snapshots,
+            settings.duplicate_auto_merge_threshold,
+        )
+
+        row_by_provider_id = {
+            row.provider_activity_id: row
+            for row in source_rows
+        }
+
+        # If one previously merged canonical splits into multiple physical
+        # sessions, process the group containing its former PRIMARY source
+        # first. That group retains the old CanonicalSession identity.
+        def group_has_previous_primary(indexes: list[int]) -> bool:
+            for index in indexes:
+                row = row_by_provider_id[
+                    snapshots[index].provider_activity_id
+                ]
+                if row.id in previous_primary_source_ids:
+                    return True
+            return False
+
+        groups = sorted(
+            groups,
+            key=lambda indexes: (
+                not group_has_previous_primary(indexes)
+            ),
+        )
+
         canonical_count = 0
         merged_count = 0
         rebuilt_canonical_ids: set[uuid.UUID] = set()
+        claimed_canonical_ids: set[uuid.UUID] = set()
 
         for indexes in groups:
             group_snapshots = [snapshots[i] for i in indexes]
@@ -166,11 +200,6 @@ class IntervalsSyncService:
                 group_snapshots,
                 source_preference,
             )
-
-            row_by_provider_id = {
-                row.provider_activity_id: row
-                for row in source_rows
-            }
 
             group_source_ids = {
                 row_by_provider_id[
@@ -199,6 +228,12 @@ class IntervalsSyncService:
                 )
             )
 
+            if (
+                canonical is not None
+                and canonical.id in claimed_canonical_ids
+            ):
+                canonical = None
+
             # If the fingerprint changed because Intervals corrected the
             # source record, keep the previous canonical UUID whenever
             # possible. Future feedback, analyses and plan links must not
@@ -219,6 +254,8 @@ class IntervalsSyncService:
                     if (
                         candidate is not None
                         and candidate.athlete_id == athlete_id
+                        and candidate.id
+                        not in claimed_canonical_ids
                     )
                 ]
 
@@ -240,6 +277,8 @@ class IntervalsSyncService:
                 self.db.flush()
             else:
                 canonical.fingerprint = result.fingerprint
+
+            claimed_canonical_ids.add(canonical.id)
 
             canonical.sport = result.sport
             canonical.indoor = result.indoor

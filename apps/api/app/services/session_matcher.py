@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.domain.sport import normalize_sport
 from app.models.entities import (
     CanonicalSession,
     CanonicalSessionSource,
@@ -24,32 +25,6 @@ def _utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
-
-
-def normalize_sport(value: str | None) -> str:
-    key = "".join(
-        char
-        for char in (value or "").lower()
-        if char.isalnum()
-    )
-
-    if (
-        "ride" in key
-        or "cycling" in key
-        or "bike" in key
-    ):
-        return "cycling"
-
-    if "run" in key:
-        return "running"
-
-    if "swim" in key:
-        return "swimming"
-
-    if "walk" in key or "hike" in key:
-        return "walking"
-
-    return key
 
 
 class SessionMatcher:

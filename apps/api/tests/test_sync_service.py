@@ -717,6 +717,7 @@ def test_sync_automatically_matches_planned_session(
     )
 
     assert result["session_analysis"]["analyzed"] == 1
-    assert result["session_analysis"]["on_plan"] == 1
+    assert result["session_analysis"]["matched"] == 1
+    assert result["session_analysis"]["duration_within"] == 1
     assert analysis is not None
-    assert analysis.classification == "on_plan"
+    assert analysis.classification == "matched"

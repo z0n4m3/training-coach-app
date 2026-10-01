@@ -606,3 +606,104 @@ def test_session_match_is_repointed_when_canonicals_collapse(
         persisted_match.planned_session_id
         == planned.id
     )
+
+
+def test_sync_automatically_matches_planned_session(
+    monkeypatch,
+):
+    db = make_db()
+    athlete = make_athlete(db)
+
+    season = Season(
+        athlete_id=athlete.id,
+        name="Ultra 2027",
+        start_date=date(2026, 9, 1),
+        end_date=date(2027, 10, 31),
+    )
+    db.add(season)
+    db.flush()
+
+    macrocycle = Macrocycle(
+        season_id=season.id,
+        athlete_id=athlete.id,
+        name="Base",
+        sequence=1,
+        start_date=date(2026, 9, 1),
+        end_date=date(2026, 10, 31),
+    )
+    db.add(macrocycle)
+    db.flush()
+
+    week = TrainingWeek(
+        macrocycle_id=macrocycle.id,
+        athlete_id=athlete.id,
+        week_number=1,
+        start_date=date(2026, 9, 28),
+        end_date=date(2026, 10, 4),
+    )
+    db.add(week)
+    db.flush()
+
+    planned = PlannedSession(
+        training_week_id=week.id,
+        athlete_id=athlete.id,
+        planned_start_at=datetime(
+            2026,
+            9,
+            28,
+            16,
+            15,
+            tzinfo=timezone.utc,
+        ),
+        name="Indoor Tempo",
+        sport="cycling",
+        priority="SUPPORT",
+        status="planned",
+        planned_duration_s=4500,
+    )
+    db.add(planned)
+    db.commit()
+
+    monkeypatch.setattr(
+        sync_module,
+        "IntervalsClient",
+        FakeIntervalsClient,
+    )
+
+    FakeIntervalsClient.batches = [
+        [
+            payload("garmin.json"),
+            payload("mywhoosh.json"),
+        ]
+    ]
+
+    result = IntervalsSyncService(
+        db
+    ).sync(
+        athlete.id,
+        days=7,
+    )
+
+    db.expire_all()
+
+    match = db.scalar(
+        select(SessionMatch).where(
+            SessionMatch.planned_session_id
+            == planned.id
+        )
+    )
+
+    persisted_plan = db.get(
+        PlannedSession,
+        planned.id,
+    )
+
+    assert result["plan_matching"]["matched"] == 1
+    assert (
+        result["plan_matching"]["matched_by_score"]
+        == 1
+    )
+
+    assert match is not None
+    assert match.match_method == "auto_score"
+    assert persisted_plan.status == "completed"

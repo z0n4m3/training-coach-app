@@ -246,12 +246,13 @@ def test_duration_close_to_plan_is_on_plan():
         select(SessionAnalysis)
     )
 
-    assert result["on_plan"] == 1
-    assert analysis.classification == "on_plan"
+    assert result["matched"] == 1
+    assert result["duration_within"] == 1
+    assert analysis.classification == "matched"
 
     duration = analysis.evidence[
-        "comparisons"
-    ]["duration"]
+        "duration_assessment"
+    ]["comparison"]
 
     assert duration["level"] == "within"
 
@@ -292,10 +293,17 @@ def test_large_duration_difference_is_major_modification():
         select(SessionAnalysis)
     )
 
-    assert result["modified_major"] == 1
+    assert result["matched"] == 1
+    assert result["duration_major"] == 1
     assert (
         analysis.classification
-        == "modified_major"
+        == "matched"
+    )
+    assert (
+        analysis.evidence[
+            "duration_assessment"
+        ]["status"]
+        == "major"
     )
     assert (
         "duration_under_major"
@@ -360,7 +368,13 @@ def test_analysis_is_updated_instead_of_duplicated():
     assert analyses[0].id == first_id
     assert (
         analyses[0].classification
-        == "modified_major"
+        == "matched"
+    )
+    assert (
+        analyses[0].evidence[
+            "duration_assessment"
+        ]["status"]
+        == "major"
     )
 
 
@@ -524,7 +538,7 @@ def test_indoor_session_uses_historical_indoor_ftp():
 
     assert (
         analysis.analysis_version
-        == "deterministic-v2"
+        == "deterministic-v3"
     )
 
     assert (
@@ -801,5 +815,349 @@ def test_unknown_indoor_outdoor_context_is_not_guessed():
 
     assert (
         "performance_context_unknown"
+        in analysis.flags
+    )
+
+
+def test_distance_does_not_affect_training_compliance():
+    db = make_db()
+    athlete = make_athlete(db)
+
+    plan = make_plan(
+        db,
+        athlete,
+        duration_s=4500,
+        distance_m=100000,
+    )
+
+    session = make_session(
+        db,
+        athlete,
+        duration_s=4500,
+        distance_m=25000,
+        fingerprint="distance-not-target",
+    )
+
+    link(
+        db,
+        athlete,
+        plan,
+        session,
+    )
+
+    result = SessionAnalyzer(
+        db
+    ).analyze(
+        athlete.id,
+        {session.id},
+    )
+
+    db.commit()
+
+    analysis = db.scalar(
+        select(SessionAnalysis).where(
+            SessionAnalysis.canonical_session_id
+            == session.id
+        )
+    )
+
+    assert result["matched"] == 1
+    assert result["duration_within"] == 1
+
+    assert (
+        analysis.evidence[
+            "duration_assessment"
+        ]["status"]
+        == "within"
+    )
+
+
+def test_steady_power_and_hr_targets_are_assessed_separately():
+    db = make_db()
+    athlete = make_athlete(db)
+
+    PerformanceProfileService(
+        db
+    ).create_zone_set(
+        ZoneSetCreate(
+            athlete_id=athlete.id,
+            sport="cycling",
+            context="outdoor",
+            effective_from=datetime(
+                2026,
+                9,
+                1,
+                tzinfo=timezone.utc,
+            ),
+            ftp_w=250,
+            threshold_hr_bpm=178,
+            source="test",
+        )
+    )
+
+    plan = make_plan(
+        db,
+        athlete,
+        duration_s=4500,
+    )
+
+    plan.targets = {
+        "power": {
+            "metric":
+                "avg_power_pct_ftp",
+            "min": 60,
+            "max": 72,
+        },
+        "hr": {
+            "metric":
+                "avg_hr_pct_threshold",
+            "min": 70,
+            "max": 85,
+        },
+    }
+
+    plan.workout_structure = {
+        "type": "steady",
+    }
+
+    session = make_session(
+        db,
+        athlete,
+        duration_s=4500,
+        fingerprint="too-hard-steady",
+    )
+
+    session.indoor = False
+    session.avg_power_w = 205
+    session.avg_hr_bpm = 150
+
+    db.commit()
+
+    link(
+        db,
+        athlete,
+        plan,
+        session,
+    )
+
+    result = SessionAnalyzer(
+        db
+    ).analyze(
+        athlete.id,
+        {session.id},
+    )
+
+    db.commit()
+
+    analysis = db.scalar(
+        select(SessionAnalysis).where(
+            SessionAnalysis.canonical_session_id
+            == session.id
+        )
+    )
+
+    stimulus = analysis.evidence[
+        "stimulus_assessment"
+    ]
+
+    assert result["duration_within"] == 1
+
+    assert (
+        stimulus["power"]["status"]
+        == "above_target"
+    )
+
+    assert (
+        stimulus["hr"]["status"]
+        == "aligned"
+    )
+
+    assert (
+        stimulus["status"]
+        == "above_target"
+    )
+
+
+def test_power_hr_disagreement_is_preserved():
+    db = make_db()
+    athlete = make_athlete(db)
+
+    PerformanceProfileService(
+        db
+    ).create_zone_set(
+        ZoneSetCreate(
+            athlete_id=athlete.id,
+            sport="cycling",
+            context="outdoor",
+            effective_from=datetime(
+                2026,
+                9,
+                1,
+                tzinfo=timezone.utc,
+            ),
+            ftp_w=250,
+            threshold_hr_bpm=178,
+            source="test",
+        )
+    )
+
+    plan = make_plan(
+        db,
+        athlete,
+    )
+
+    plan.targets = {
+        "power": {
+            "metric":
+                "avg_power_pct_ftp",
+            "min": 65,
+            "max": 75,
+        },
+        "hr": {
+            "metric":
+                "avg_hr_pct_threshold",
+            "min": 75,
+            "max": 85,
+        },
+    }
+
+    plan.workout_structure = {
+        "type": "steady",
+    }
+
+    session = make_session(
+        db,
+        athlete,
+        fingerprint="mixed-response",
+    )
+
+    session.indoor = False
+    session.avg_power_w = 190
+    session.avg_hr_bpm = 125
+
+    db.commit()
+
+    link(
+        db,
+        athlete,
+        plan,
+        session,
+    )
+
+    SessionAnalyzer(
+        db
+    ).analyze(
+        athlete.id,
+        {session.id},
+    )
+
+    db.commit()
+
+    analysis = db.scalar(
+        select(SessionAnalysis).where(
+            SessionAnalysis.canonical_session_id
+            == session.id
+        )
+    )
+
+    stimulus = analysis.evidence[
+        "stimulus_assessment"
+    ]
+
+    assert (
+        stimulus["power"]["status"]
+        == "above_target"
+    )
+
+    assert (
+        stimulus["hr"]["status"]
+        == "below_target"
+    )
+
+    assert (
+        stimulus["status"]
+        == "mixed"
+    )
+
+    assert (
+        "power_above_target"
+        in analysis.flags
+    )
+
+    assert (
+        "hr_below_target"
+        in analysis.flags
+    )
+
+
+def test_interval_workout_is_not_judged_from_session_average():
+    db = make_db()
+    athlete = make_athlete(db)
+
+    plan = make_plan(
+        db,
+        athlete,
+    )
+
+    plan.session_type = "THRESHOLD"
+
+    plan.targets = {
+        "power": {
+            "metric":
+                "avg_power_pct_ftp",
+            "min": 95,
+            "max": 105,
+        }
+    }
+
+    plan.workout_structure = {
+        "type": "intervals",
+        "steps": [
+            {
+                "repeats": 4,
+                "work_s": 600,
+                "recovery_s": 300,
+            }
+        ],
+    }
+
+    session = make_session(
+        db,
+        athlete,
+        fingerprint="interval-safe",
+    )
+
+    link(
+        db,
+        athlete,
+        plan,
+        session,
+    )
+
+    SessionAnalyzer(
+        db
+    ).analyze(
+        athlete.id,
+        {session.id},
+    )
+
+    db.commit()
+
+    analysis = db.scalar(
+        select(SessionAnalysis).where(
+            SessionAnalysis.canonical_session_id
+            == session.id
+        )
+    )
+
+    assert (
+        analysis.evidence[
+            "stimulus_assessment"
+        ]["status"]
+        == "interval_analysis_required"
+    )
+
+    assert (
+        "stimulus_requires_interval_analysis"
         in analysis.flags
     )

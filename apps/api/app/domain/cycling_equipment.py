@@ -126,3 +126,76 @@ def validate_role_category(
                 f"cannot be used as {role}"
             )
         )
+
+
+TRAINING_ENVIRONMENTS = (
+    "indoor",
+    "outdoor",
+)
+
+TRAINING_SETUP_DEVICE_ROLES = {
+    "trainer": {
+        "trainer",
+    },
+    "primary_power_source": {
+        "power_meter",
+        "trainer",
+    },
+    "secondary_power_source": {
+        "power_meter",
+        "trainer",
+    },
+    "hr_source": {
+        "heart_rate_sensor",
+    },
+    "recording_device": {
+        "recording_device",
+    },
+    "temperature_source": {
+        "temperature_sensor",
+    },
+}
+
+
+def normalize_training_environment(
+    value: str,
+) -> str:
+    normalized = _normalize(value)
+
+    if normalized not in TRAINING_ENVIRONMENTS:
+        raise ValueError(
+            "Unsupported training environment"
+        )
+
+    return normalized
+
+
+def normalize_training_setup_role(
+    value: str,
+) -> str:
+    normalized = _normalize(value)
+
+    if normalized not in TRAINING_SETUP_DEVICE_ROLES:
+        raise ValueError(
+            "Unsupported training setup device role"
+        )
+
+    return normalized
+
+
+def validate_training_setup_role_category(
+    *,
+    role: str,
+    category: str,
+) -> None:
+    allowed = TRAINING_SETUP_DEVICE_ROLES[
+        role
+    ]
+
+    if category not in allowed:
+        raise ValueError(
+            (
+                f"Device category {category} "
+                f"cannot be used as {role}"
+            )
+        )

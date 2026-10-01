@@ -674,3 +674,109 @@ class BikeDeviceAssignment(Base):
         DateTime(timezone=True),
         default=utcnow,
     )
+
+
+class TrainingSetup(Base):
+    __tablename__ = "training_setups"
+    __table_args__ = (
+        UniqueConstraint(
+            "athlete_id",
+            "name",
+            name="uq_training_setup_athlete_name",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    athlete_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(
+            "athletes.id",
+            ondelete="CASCADE",
+        ),
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(
+        String(200),
+    )
+    sport: Mapped[str] = mapped_column(
+        String(64),
+        default="cycling",
+    )
+    discipline: Mapped[str] = mapped_column(
+        String(32),
+    )
+    environment: Mapped[str] = mapped_column(
+        String(32),
+    )
+    bike_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(
+            "bikes.id",
+            ondelete="CASCADE",
+        ),
+        index=True,
+    )
+    notes: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    active: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+
+class TrainingSetupDevice(Base):
+    __tablename__ = "training_setup_devices"
+    __table_args__ = (
+        UniqueConstraint(
+            "training_setup_id",
+            "role",
+            name="uq_training_setup_device_role",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    athlete_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(
+            "athletes.id",
+            ondelete="CASCADE",
+        ),
+        index=True,
+    )
+    training_setup_id: Mapped[
+        uuid.UUID
+    ] = mapped_column(
+        ForeignKey(
+            "training_setups.id",
+            ondelete="CASCADE",
+        ),
+        index=True,
+    )
+    device_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(
+            "devices.id",
+            ondelete="CASCADE",
+        ),
+        index=True,
+    )
+    role: Mapped[str] = mapped_column(
+        String(64),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+    )

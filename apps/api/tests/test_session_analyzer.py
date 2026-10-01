@@ -15,6 +15,10 @@ from app.models.entities import (
     TrainingWeek,
     User,
 )
+from app.schemas.performance import ZoneSetCreate
+from app.services.performance_profile_service import (
+    PerformanceProfileService,
+)
 from app.services.session_analyzer import SessionAnalyzer
 
 
@@ -436,4 +440,366 @@ def test_multiple_plan_matches_are_not_guessed():
     assert (
         analysis.planned_session_id
         is None
+    )
+
+
+def test_indoor_session_uses_historical_indoor_ftp():
+    db = make_db()
+    athlete = make_athlete(db)
+
+    service = PerformanceProfileService(
+        db
+    )
+
+    service.create_zone_set(
+        ZoneSetCreate(
+            athlete_id=athlete.id,
+            sport="cycling",
+            context="indoor",
+            effective_from=datetime(
+                2026,
+                9,
+                1,
+                tzinfo=timezone.utc,
+            ),
+            ftp_w=230,
+            threshold_hr_bpm=178,
+            source="test",
+        )
+    )
+
+    # Future FTP version must NOT affect
+    # the September session.
+    service.create_zone_set(
+        ZoneSetCreate(
+            athlete_id=athlete.id,
+            sport="cycling",
+            context="indoor",
+            effective_from=datetime(
+                2026,
+                10,
+                15,
+                tzinfo=timezone.utc,
+            ),
+            ftp_w=240,
+            threshold_hr_bpm=180,
+            source="test",
+        )
+    )
+
+    session = make_session(
+        db,
+        athlete,
+        duration_s=4500,
+        fingerprint="indoor-intensity",
+    )
+
+    session.indoor = True
+    session.avg_power_w = 184
+    session.normalized_power_w = 207
+    session.avg_hr_bpm = 150
+    session.max_hr_bpm = 176
+
+    db.commit()
+
+    SessionAnalyzer(
+        db
+    ).analyze(
+        athlete.id,
+        {session.id},
+    )
+
+    db.commit()
+
+    analysis = db.scalar(
+        select(SessionAnalysis).where(
+            SessionAnalysis.canonical_session_id
+            == session.id
+        )
+    )
+
+    performance = analysis.evidence[
+        "performance"
+    ]
+
+    assert (
+        analysis.analysis_version
+        == "deterministic-v2"
+    )
+
+    assert (
+        performance["context"]
+        == "indoor"
+    )
+
+    assert (
+        performance["ftp_w"]
+        == 230
+    )
+
+    assert (
+        performance[
+            "threshold_hr_bpm"
+        ]
+        == 178
+    )
+
+    assert (
+        performance[
+            "avg_power_pct_ftp"
+        ]
+        == 80.0
+    )
+
+    assert (
+        performance[
+            "normalized_power_pct_ftp"
+        ]
+        == 90.0
+    )
+
+    assert (
+        performance[
+            "intensity_factor"
+        ]
+        == 0.9
+    )
+
+    assert (
+        performance[
+            "avg_hr_pct_threshold"
+        ]
+        == 84.27
+    )
+
+    assert (
+        performance[
+            "max_hr_pct_threshold"
+        ]
+        == 98.88
+    )
+
+    assert (
+        performance[
+            "effective_from"
+        ].startswith("2026-09-01")
+    )
+
+
+def test_outdoor_session_uses_outdoor_profile():
+    db = make_db()
+    athlete = make_athlete(db)
+
+    service = PerformanceProfileService(
+        db
+    )
+
+    service.create_zone_set(
+        ZoneSetCreate(
+            athlete_id=athlete.id,
+            sport="cycling",
+            context="indoor",
+            effective_from=datetime(
+                2026,
+                9,
+                1,
+                tzinfo=timezone.utc,
+            ),
+            ftp_w=230,
+            source="test",
+        )
+    )
+
+    service.create_zone_set(
+        ZoneSetCreate(
+            athlete_id=athlete.id,
+            sport="cycling",
+            context="outdoor",
+            effective_from=datetime(
+                2026,
+                9,
+                1,
+                tzinfo=timezone.utc,
+            ),
+            ftp_w=250,
+            source="test",
+        )
+    )
+
+    session = make_session(
+        db,
+        athlete,
+        fingerprint="outdoor-intensity",
+    )
+
+    session.indoor = False
+    session.avg_power_w = 175
+    session.normalized_power_w = 200
+
+    db.commit()
+
+    SessionAnalyzer(
+        db
+    ).analyze(
+        athlete.id,
+        {session.id},
+    )
+
+    db.commit()
+
+    analysis = db.scalar(
+        select(SessionAnalysis).where(
+            SessionAnalysis.canonical_session_id
+            == session.id
+        )
+    )
+
+    performance = analysis.evidence[
+        "performance"
+    ]
+
+    assert (
+        performance["context"]
+        == "outdoor"
+    )
+
+    assert (
+        performance["ftp_w"]
+        == 250
+    )
+
+    assert (
+        performance[
+            "avg_power_pct_ftp"
+        ]
+        == 70.0
+    )
+
+    assert (
+        performance[
+            "normalized_power_pct_ftp"
+        ]
+        == 80.0
+    )
+
+    assert (
+        performance[
+            "intensity_factor"
+        ]
+        == 0.8
+    )
+
+
+def test_session_without_effective_profile_is_not_guessed():
+    db = make_db()
+    athlete = make_athlete(db)
+
+    service = PerformanceProfileService(
+        db
+    )
+
+    service.create_zone_set(
+        ZoneSetCreate(
+            athlete_id=athlete.id,
+            sport="cycling",
+            context="outdoor",
+            effective_from=datetime(
+                2026,
+                10,
+                15,
+                tzinfo=timezone.utc,
+            ),
+            ftp_w=255,
+            source="test",
+        )
+    )
+
+    session = make_session(
+        db,
+        athlete,
+        fingerprint="no-old-profile",
+    )
+
+    session.indoor = False
+
+    db.commit()
+
+    SessionAnalyzer(
+        db
+    ).analyze(
+        athlete.id,
+        {session.id},
+    )
+
+    db.commit()
+
+    analysis = db.scalar(
+        select(SessionAnalysis).where(
+            SessionAnalysis.canonical_session_id
+            == session.id
+        )
+    )
+
+    performance = analysis.evidence[
+        "performance"
+    ]
+
+    assert (
+        performance["status"]
+        == "zone_set_missing"
+    )
+
+    assert (
+        performance["ftp_w"]
+        is None
+    )
+
+    assert (
+        "no_effective_zone_set"
+        in analysis.flags
+    )
+
+
+def test_unknown_indoor_outdoor_context_is_not_guessed():
+    db = make_db()
+    athlete = make_athlete(db)
+
+    session = make_session(
+        db,
+        athlete,
+        fingerprint="unknown-context",
+    )
+
+    session.indoor = None
+
+    db.commit()
+
+    SessionAnalyzer(
+        db
+    ).analyze(
+        athlete.id,
+        {session.id},
+    )
+
+    db.commit()
+
+    analysis = db.scalar(
+        select(SessionAnalysis).where(
+            SessionAnalysis.canonical_session_id
+            == session.id
+        )
+    )
+
+    performance = analysis.evidence[
+        "performance"
+    ]
+
+    assert (
+        performance["status"]
+        == "context_unknown"
+    )
+
+    assert (
+        "performance_context_unknown"
+        in analysis.flags
     )

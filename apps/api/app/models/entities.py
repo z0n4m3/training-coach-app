@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, JSON, String, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -142,3 +142,182 @@ class SyncState(Base):
     )
     cursor: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="idle")
+
+
+
+class Season(Base):
+    __tablename__ = "seasons"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    athlete_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("athletes.id", ondelete="CASCADE"),
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(200))
+    start_date: Mapped[date] = mapped_column(Date)
+    end_date: Mapped[date] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(32), default="planning")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+
+class GoalEvent(Base):
+    __tablename__ = "goal_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    season_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("seasons.id", ondelete="CASCADE"),
+        index=True,
+    )
+    athlete_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("athletes.id", ondelete="CASCADE"),
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(200))
+    event_start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    priority: Mapped[str] = mapped_column(String(16), default="A")
+    distance_km: Mapped[float | None] = mapped_column(Float, nullable=True)
+    target_time_s: Mapped[float | None] = mapped_column(Float, nullable=True)
+    goal_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+
+class Macrocycle(Base):
+    __tablename__ = "macrocycles"
+    __table_args__ = (
+        UniqueConstraint(
+            "season_id",
+            "sequence",
+            name="uq_macrocycle_season_sequence",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    season_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("seasons.id", ondelete="CASCADE"),
+        index=True,
+    )
+    athlete_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("athletes.id", ondelete="CASCADE"),
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(200))
+    sequence: Mapped[int] = mapped_column(Integer)
+    start_date: Mapped[date] = mapped_column(Date)
+    end_date: Mapped[date] = mapped_column(Date)
+    objective: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="planned")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+
+class TrainingWeek(Base):
+    __tablename__ = "training_weeks"
+    __table_args__ = (
+        UniqueConstraint(
+            "macrocycle_id",
+            "week_number",
+            name="uq_training_week_macrocycle_number",
+        ),
+        UniqueConstraint(
+            "athlete_id",
+            "start_date",
+            name="uq_training_week_athlete_start",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    macrocycle_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("macrocycles.id", ondelete="CASCADE"),
+        index=True,
+    )
+    athlete_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("athletes.id", ondelete="CASCADE"),
+        index=True,
+    )
+    week_number: Mapped[int] = mapped_column(Integer)
+    start_date: Mapped[date] = mapped_column(Date)
+    end_date: Mapped[date] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(32), default="planned")
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+
+class PlannedSession(Base):
+    __tablename__ = "planned_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    training_week_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("training_weeks.id", ondelete="CASCADE"),
+        index=True,
+    )
+    athlete_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("athletes.id", ondelete="CASCADE"),
+        index=True,
+    )
+    planned_start_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(200))
+    sport: Mapped[str] = mapped_column(String(64), default="cycling")
+    session_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    priority: Mapped[str] = mapped_column(String(16), default="SUPPORT")
+    status: Mapped[str] = mapped_column(String(32), default="planned")
+    planned_duration_s: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+    )
+    planned_distance_m: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+    )
+    targets: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    workout_structure: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        default=dict,
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    intervals_event_id: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )

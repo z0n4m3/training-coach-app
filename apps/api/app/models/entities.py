@@ -372,3 +372,55 @@ class SessionMatch(Base):
         default=utcnow,
         onupdate=utcnow,
     )
+
+
+class SessionAnalysis(Base):
+    __tablename__ = "session_analyses"
+    __table_args__ = (
+        UniqueConstraint(
+            "canonical_session_id",
+            name="uq_session_analysis_canonical",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    athlete_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("athletes.id", ondelete="CASCADE"),
+        index=True,
+    )
+    canonical_session_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("canonical_sessions.id", ondelete="CASCADE"),
+        index=True,
+    )
+    planned_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("planned_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    analysis_version: Mapped[str] = mapped_column(
+        String(64),
+        default="deterministic-v1",
+    )
+    classification: Mapped[str] = mapped_column(
+        String(64),
+    )
+    evidence: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        default=dict,
+    )
+    flags: Mapped[list[Any]] = mapped_column(
+        JSON,
+        default=list,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )

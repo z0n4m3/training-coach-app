@@ -206,3 +206,45 @@ def test_session_detail_is_scoped_to_athlete():
     )
 
     assert detail is None
+
+
+def test_session_detail_exposes_deterministic_analysis():
+    db = make_db()
+    athlete, canonical = make_fixture(db)
+
+    from app.models.entities import SessionAnalysis
+
+    analysis = SessionAnalysis(
+        athlete_id=athlete.id,
+        canonical_session_id=canonical.id,
+        planned_session_id=None,
+        analysis_version="deterministic-v1",
+        classification="unplanned",
+        evidence={
+            "actual": {
+                "duration_s": canonical.duration_s,
+            },
+        },
+        flags=[
+            "no_planned_session_match",
+        ],
+    )
+
+    db.add(analysis)
+    db.commit()
+
+    detail = SessionQueryService(db).get_session(
+        athlete_id=athlete.id,
+        session_id=canonical.id,
+    )
+
+    assert detail is not None
+    assert detail["analysis"] is not None
+    assert (
+        detail["analysis"]["classification"]
+        == "unplanned"
+    )
+    assert (
+        detail["analysis"]["analysis_version"]
+        == "deterministic-v1"
+    )

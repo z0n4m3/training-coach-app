@@ -20,6 +20,7 @@ from app.models.entities import (
 from app.services.canonicalizer import canonicalize
 from app.services.duplicate_engine import build_groups, score_duplicate
 from app.services.intervals_mapper import from_intervals
+from app.services.session_analyzer import SessionAnalyzer
 from app.services.session_matcher import SessionMatcher
 
 
@@ -400,6 +401,13 @@ class IntervalsSyncService:
             canonical_ids=rebuilt_canonical_ids,
         )
 
+        session_analysis = SessionAnalyzer(
+            self.db
+        ).analyze(
+            athlete_id=athlete_id,
+            canonical_ids=rebuilt_canonical_ids,
+        )
+
         self.db.commit()
 
         return {
@@ -411,4 +419,5 @@ class IntervalsSyncService:
             "canonical_sessions": canonical_count,
             "merged_groups": merged_count,
             "plan_matching": plan_matching,
+            "session_analysis": session_analysis,
         }

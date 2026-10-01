@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models.entities import (
     CanonicalSession,
     CanonicalSessionSource,
+    SessionAnalysis,
     SessionMetricSource,
     SourceActivity,
 )
@@ -80,7 +81,36 @@ class SessionQueryService:
             .order_by(SessionMetricSource.metric_name.asc())
         ).all()
 
+        analysis = self.db.scalar(
+            select(SessionAnalysis).where(
+                SessionAnalysis.canonical_session_id
+                == session.id,
+                SessionAnalysis.athlete_id
+                == athlete_id,
+            )
+        )
+
         result = self._summary(session)
+
+        result["analysis"] = (
+            None
+            if analysis is None
+            else {
+                "id": analysis.id,
+                "planned_session_id":
+                    analysis.planned_session_id,
+                "analysis_version":
+                    analysis.analysis_version,
+                "classification":
+                    analysis.classification,
+                "evidence":
+                    analysis.evidence,
+                "flags":
+                    analysis.flags,
+                "updated_at":
+                    analysis.updated_at,
+            }
+        )
 
         result["sources"] = [
             {

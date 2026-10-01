@@ -15,6 +15,7 @@ from app.models.entities import (
     Macrocycle,
     PlannedSession,
     Season,
+    SessionAnalysis,
     SessionMatch,
     SessionMetricSource,
     SourceActivity,
@@ -707,3 +708,15 @@ def test_sync_automatically_matches_planned_session(
     assert match is not None
     assert match.match_method == "auto_score"
     assert persisted_plan.status == "completed"
+
+    analysis = db.scalar(
+        select(SessionAnalysis).where(
+            SessionAnalysis.canonical_session_id
+            == match.canonical_session_id
+        )
+    )
+
+    assert result["session_analysis"]["analyzed"] == 1
+    assert result["session_analysis"]["on_plan"] == 1
+    assert analysis is not None
+    assert analysis.classification == "on_plan"

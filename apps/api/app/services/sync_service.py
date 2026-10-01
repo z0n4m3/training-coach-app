@@ -20,6 +20,7 @@ from app.models.entities import (
 from app.services.canonicalizer import canonicalize
 from app.services.duplicate_engine import build_groups, score_duplicate
 from app.services.intervals_mapper import from_intervals
+from app.services.session_matcher import SessionMatcher
 
 
 INTERVALS_ACTIVITIES_RESOURCE = "intervals.activities"
@@ -388,10 +389,26 @@ class IntervalsSyncService:
                 )
             )
 
+        # Canonical source links are still pending in this transaction.
+        # Flush them so the matcher can also use Intervals paired_event_id.
+        self.db.flush()
+
+        plan_matching = SessionMatcher(
+            self.db
+        ).auto_match(
+            athlete_id=athlete_id,
+            canonical_ids=rebuilt_canonical_ids,
+        )
+
         self.db.commit()
+
         return {
-            "window": {"oldest": oldest.isoformat(), "newest": newest.isoformat()},
+            "window": {
+                "oldest": oldest.isoformat(),
+                "newest": newest.isoformat(),
+            },
             "source_activities": len(snapshots),
             "canonical_sessions": canonical_count,
             "merged_groups": merged_count,
+            "plan_matching": plan_matching,
         }

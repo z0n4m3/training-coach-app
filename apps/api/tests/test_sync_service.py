@@ -1,4 +1,5 @@
 import json
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -11,9 +12,14 @@ from app.models.entities import (
     Athlete,
     CanonicalSession,
     CanonicalSessionSource,
+    Macrocycle,
+    PlannedSession,
+    Season,
+    SessionMatch,
     SessionMetricSource,
     SourceActivity,
     SyncState,
+    TrainingWeek,
     User,
 )
 import app.services.sync_service as sync_module
@@ -445,4 +451,158 @@ def test_previously_merged_session_can_split_without_losing_source(
     assert (
         mywhoosh_link.canonical_session_id
         != original_canonical_id
+    )
+
+
+def test_session_match_is_repointed_when_canonicals_collapse(
+    monkeypatch,
+):
+    db = make_db()
+    athlete = make_athlete(db)
+
+    monkeypatch.setattr(
+        sync_module,
+        "IntervalsClient",
+        FakeIntervalsClient,
+    )
+
+    garmin = payload("garmin.json")
+
+    mywhoosh_separate = payload("mywhoosh.json")
+    mywhoosh_separate["start_date"] = (
+        "2026-09-28T17:00:25Z"
+    )
+
+    mywhoosh_corrected = payload("mywhoosh.json")
+
+    FakeIntervalsClient.batches = [
+        [
+            garmin,
+            mywhoosh_separate,
+        ],
+        [
+            garmin,
+            mywhoosh_corrected,
+        ],
+    ]
+
+    IntervalsSyncService(db).sync(
+        athlete.id,
+        days=7,
+    )
+
+    source = db.scalar(
+        select(SourceActivity).where(
+            SourceActivity.provider_activity_id
+            == "mywhoosh-001"
+        )
+    )
+
+    old_link = db.scalar(
+        select(CanonicalSessionSource).where(
+            CanonicalSessionSource.source_activity_id
+            == source.id
+        )
+    )
+
+    old_canonical_id = old_link.canonical_session_id
+
+    season = Season(
+        athlete_id=athlete.id,
+        name="Ultra 2027",
+        start_date=date(2026, 9, 1),
+        end_date=date(2027, 10, 31),
+    )
+    db.add(season)
+    db.flush()
+
+    macrocycle = Macrocycle(
+        season_id=season.id,
+        athlete_id=athlete.id,
+        name="Base",
+        sequence=1,
+        start_date=date(2026, 9, 1),
+        end_date=date(2026, 10, 31),
+    )
+    db.add(macrocycle)
+    db.flush()
+
+    week = TrainingWeek(
+        macrocycle_id=macrocycle.id,
+        athlete_id=athlete.id,
+        week_number=1,
+        start_date=date(2026, 9, 28),
+        end_date=date(2026, 10, 4),
+    )
+    db.add(week)
+    db.flush()
+
+    planned = PlannedSession(
+        training_week_id=week.id,
+        athlete_id=athlete.id,
+        planned_start_at=datetime(
+            2026,
+            9,
+            28,
+            17,
+            0,
+            tzinfo=timezone.utc,
+        ),
+        name="Indoor Tempo",
+        sport="cycling",
+        priority="SUPPORT",
+    )
+    db.add(planned)
+    db.flush()
+
+    session_match = SessionMatch(
+        athlete_id=athlete.id,
+        planned_session_id=planned.id,
+        canonical_session_id=old_canonical_id,
+        match_method="manual",
+        match_score=None,
+        match_evidence={
+            "reason": "manual test match",
+        },
+        manual_override=True,
+    )
+
+    db.add(session_match)
+    db.commit()
+
+    match_id = session_match.id
+
+    IntervalsSyncService(db).sync(
+        athlete.id,
+        days=7,
+    )
+
+    canonicals = list(
+        db.scalars(
+            select(CanonicalSession)
+        )
+    )
+
+    assert len(canonicals) == 1
+
+    surviving_canonical_id = canonicals[0].id
+
+    db.expire_all()
+
+    persisted_match = db.get(
+        SessionMatch,
+        match_id,
+    )
+
+    assert persisted_match is not None
+    assert (
+        persisted_match.canonical_session_id
+        == surviving_canonical_id
+    )
+    assert persisted_match.manual_override is True
+    assert persisted_match.match_method == "manual"
+
+    assert (
+        persisted_match.planned_session_id
+        == planned.id
     )

@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from app.clients.intervals import IntervalsClient
@@ -12,6 +12,7 @@ from app.models.entities import (
     Athlete,
     CanonicalSession,
     CanonicalSessionSource,
+    SessionMatch,
     SessionMetricSource,
     SourceActivity,
     SyncState,
@@ -193,6 +194,10 @@ class IntervalsSyncService:
         merged_count = 0
         rebuilt_canonical_ids: set[uuid.UUID] = set()
         claimed_canonical_ids: set[uuid.UUID] = set()
+        replacement_candidates: dict[
+            uuid.UUID,
+            set[uuid.UUID],
+        ] = {}
 
         for indexes in groups:
             group_snapshots = [snapshots[i] for i in indexes]
@@ -290,6 +295,13 @@ class IntervalsSyncService:
 
             rebuilt_canonical_ids.add(canonical.id)
 
+            for previous_canonical_id in previous_group_canonical_ids:
+                if previous_canonical_id != canonical.id:
+                    replacement_candidates.setdefault(
+                        previous_canonical_id,
+                        set(),
+                    ).add(canonical.id)
+
             self.db.execute(delete(CanonicalSessionSource).where(CanonicalSessionSource.canonical_session_id == canonical.id))
             self.db.execute(delete(SessionMetricSource).where(SessionMetricSource.canonical_session_id == canonical.id))
 
@@ -332,11 +344,47 @@ class IntervalsSyncService:
         # If an activity changed enough to produce a different physical-session
         # fingerprint, remove only the now-obsolete canonical rows. Canonicals whose
         # identity is unchanged keep their original UUID.
-        stale_canonical_ids = affected_canonical_ids - rebuilt_canonical_ids
+        stale_canonical_ids = (
+            affected_canonical_ids
+            - rebuilt_canonical_ids
+        )
+
         if stale_canonical_ids:
+            # Preserve plan -> execution links when several historical
+            # canonicals collapse into one surviving physical session.
+            for stale_id in stale_canonical_ids:
+                candidates = (
+                    replacement_candidates.get(
+                        stale_id,
+                        set(),
+                    )
+                    & rebuilt_canonical_ids
+                )
+
+                if not candidates:
+                    continue
+
+                replacement_id = min(
+                    candidates,
+                    key=str,
+                )
+
+                self.db.execute(
+                    update(SessionMatch)
+                    .where(
+                        SessionMatch.canonical_session_id
+                        == stale_id
+                    )
+                    .values(
+                        canonical_session_id=replacement_id
+                    )
+                )
+
             self.db.execute(
                 delete(CanonicalSession).where(
-                    CanonicalSession.id.in_(stale_canonical_ids)
+                    CanonicalSession.id.in_(
+                        stale_canonical_ids
+                    )
                 )
             )
 

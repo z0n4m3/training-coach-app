@@ -424,3 +424,101 @@ class SessionAnalysis(Base):
         default=utcnow,
         onupdate=utcnow,
     )
+
+
+class SportProfile(Base):
+    __tablename__ = "sport_profiles"
+    __table_args__ = (
+        UniqueConstraint(
+            "athlete_id",
+            "sport",
+            "context",
+            name="uq_sport_profile_athlete_sport_context",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    athlete_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("athletes.id", ondelete="CASCADE"),
+        index=True,
+    )
+    sport: Mapped[str] = mapped_column(
+        String(64),
+    )
+    context: Mapped[str] = mapped_column(
+        String(32),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+
+class ZoneSet(Base):
+    __tablename__ = "zone_sets"
+    __table_args__ = (
+        UniqueConstraint(
+            "sport_profile_id",
+            "effective_from",
+            name="uq_zone_set_profile_effective_from",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    sport_profile_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(
+            "sport_profiles.id",
+            ondelete="CASCADE",
+        ),
+        index=True,
+    )
+    athlete_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(
+            "athletes.id",
+            ondelete="CASCADE",
+        ),
+        index=True,
+    )
+    effective_from: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        index=True,
+    )
+    ftp_w: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+    )
+    threshold_hr_bpm: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+    )
+    power_zones: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        default=dict,
+    )
+    hr_zones: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        default=dict,
+    )
+    source: Mapped[str] = mapped_column(
+        String(32),
+        default="manual",
+    )
+    note: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+    )

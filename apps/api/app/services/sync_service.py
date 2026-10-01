@@ -131,14 +131,29 @@ class IntervalsSyncService:
         # analyses and plan/execution links will reference them.
         source_ids = [row.id for row in source_rows]
         affected_canonical_ids: set[uuid.UUID] = set()
+        previous_canonical_ids_by_source: dict[
+            uuid.UUID,
+            set[uuid.UUID],
+        ] = {}
+
         if source_ids:
-            affected_canonical_ids = set(
-                self.db.scalars(
-                    select(CanonicalSessionSource.canonical_session_id).where(
-                        CanonicalSessionSource.source_activity_id.in_(source_ids)
+            previous_links = self.db.execute(
+                select(
+                    CanonicalSessionSource.source_activity_id,
+                    CanonicalSessionSource.canonical_session_id,
+                ).where(
+                    CanonicalSessionSource.source_activity_id.in_(
+                        source_ids
                     )
                 )
-            )
+            ).all()
+
+            for source_id, canonical_id in previous_links:
+                affected_canonical_ids.add(canonical_id)
+                previous_canonical_ids_by_source.setdefault(
+                    source_id,
+                    set(),
+                ).add(canonical_id)
 
         groups = build_groups(snapshots, settings.duplicate_auto_merge_threshold)
         canonical_count = 0
@@ -147,13 +162,72 @@ class IntervalsSyncService:
 
         for indexes in groups:
             group_snapshots = [snapshots[i] for i in indexes]
-            result = canonicalize(group_snapshots, source_preference)
+            result = canonicalize(
+                group_snapshots,
+                source_preference,
+            )
+
+            row_by_provider_id = {
+                row.provider_activity_id: row
+                for row in source_rows
+            }
+
+            group_source_ids = {
+                row_by_provider_id[
+                    snapshot.provider_activity_id
+                ].id
+                for snapshot in group_snapshots
+            }
+
+            previous_group_canonical_ids: set[uuid.UUID] = set()
+
+            for source_id in group_source_ids:
+                previous_group_canonical_ids.update(
+                    previous_canonical_ids_by_source.get(
+                        source_id,
+                        set(),
+                    )
+                )
+
+            # First prefer an already existing canonical with the current
+            # fingerprint. This also handles two previously separate
+            # sessions collapsing into one duplicate group.
             canonical = self.db.scalar(
                 select(CanonicalSession).where(
                     CanonicalSession.athlete_id == athlete_id,
                     CanonicalSession.fingerprint == result.fingerprint,
                 )
             )
+
+            # If the fingerprint changed because Intervals corrected the
+            # source record, keep the previous canonical UUID whenever
+            # possible. Future feedback, analyses and plan links must not
+            # lose their session identity because a timestamp changed.
+            if (
+                canonical is None
+                and previous_group_canonical_ids
+            ):
+                candidates = [
+                    self.db.get(CanonicalSession, canonical_id)
+                    for canonical_id
+                    in previous_group_canonical_ids
+                ]
+
+                candidates = [
+                    candidate
+                    for candidate in candidates
+                    if (
+                        candidate is not None
+                        and candidate.athlete_id == athlete_id
+                    )
+                ]
+
+                if candidates:
+                    canonical = min(
+                        candidates,
+                        key=lambda item: str(item.id),
+                    )
+
             if canonical is None:
                 canonical = CanonicalSession(
                     athlete_id=athlete_id,
@@ -164,6 +238,8 @@ class IntervalsSyncService:
                 )
                 self.db.add(canonical)
                 self.db.flush()
+            else:
+                canonical.fingerprint = result.fingerprint
 
             canonical.sport = result.sport
             canonical.indoor = result.indoor
@@ -178,7 +254,6 @@ class IntervalsSyncService:
             self.db.execute(delete(CanonicalSessionSource).where(CanonicalSessionSource.canonical_session_id == canonical.id))
             self.db.execute(delete(SessionMetricSource).where(SessionMetricSource.canonical_session_id == canonical.id))
 
-            row_by_provider_id = {row.provider_activity_id: row for row in source_rows}
             primary_id = result.primary_provider_activity_id
             for snap in group_snapshots:
                 row = row_by_provider_id[snap.provider_activity_id]

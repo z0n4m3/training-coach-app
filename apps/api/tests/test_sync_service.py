@@ -171,3 +171,149 @@ def test_sync_state_records_success_and_failure(monkeypatch):
     assert state.status == "error"
     assert state.last_successful_sync is not None
     assert len(list(db.scalars(select(SyncState)))) == 1
+
+
+def test_source_correction_preserves_identity_when_fingerprint_changes(
+    monkeypatch,
+):
+    db = make_db()
+    athlete = make_athlete(db)
+
+    monkeypatch.setattr(
+        sync_module,
+        "IntervalsClient",
+        FakeIntervalsClient,
+    )
+
+    original = payload("garmin.json")
+    corrected = payload("garmin.json")
+
+    # Same provider activity, but Intervals later corrects values enough
+    # to move the session into another fingerprint bucket.
+    corrected["start_date"] = "2026-09-28T16:06:00Z"
+    corrected["moving_time"] = 4500
+
+    FakeIntervalsClient.batches = [
+        [original],
+        [corrected],
+    ]
+
+    IntervalsSyncService(db).sync(
+        athlete.id,
+        days=7,
+    )
+
+    first = db.scalar(
+        select(CanonicalSession)
+    )
+
+    first_id = first.id
+    first_fingerprint = first.fingerprint
+
+    IntervalsSyncService(db).sync(
+        athlete.id,
+        days=7,
+    )
+
+    canonicals = list(
+        db.scalars(
+            select(CanonicalSession)
+        )
+    )
+
+    assert len(canonicals) == 1
+
+    corrected_canonical = canonicals[0]
+
+    assert corrected_canonical.id == first_id
+    assert corrected_canonical.fingerprint != first_fingerprint
+
+    links = list(
+        db.scalars(
+            select(CanonicalSessionSource)
+        )
+    )
+
+    assert len(links) == 1
+    assert links[0].canonical_session_id == first_id
+
+
+def test_two_existing_canonicals_can_collapse_into_one_stable_session(
+    monkeypatch,
+):
+    db = make_db()
+    athlete = make_athlete(db)
+
+    monkeypatch.setattr(
+        sync_module,
+        "IntervalsClient",
+        FakeIntervalsClient,
+    )
+
+    garmin = payload("garmin.json")
+
+    mywhoosh_separate = payload("mywhoosh.json")
+    mywhoosh_separate["start_date"] = (
+        "2026-09-28T17:00:25Z"
+    )
+
+    mywhoosh_corrected = payload("mywhoosh.json")
+
+    FakeIntervalsClient.batches = [
+        [
+            garmin,
+            mywhoosh_separate,
+        ],
+        [
+            garmin,
+            mywhoosh_corrected,
+        ],
+    ]
+
+    IntervalsSyncService(db).sync(
+        athlete.id,
+        days=7,
+    )
+
+    first_canonicals = list(
+        db.scalars(
+            select(CanonicalSession)
+        )
+    )
+
+    assert len(first_canonicals) == 2
+
+    previous_ids = {
+        canonical.id
+        for canonical in first_canonicals
+    }
+
+    IntervalsSyncService(db).sync(
+        athlete.id,
+        days=7,
+    )
+
+    final_canonicals = list(
+        db.scalars(
+            select(CanonicalSession)
+        )
+    )
+
+    assert len(final_canonicals) == 1
+    assert final_canonicals[0].id in previous_ids
+    assert final_canonicals[0].duplicate_status == "merged"
+
+    links = list(
+        db.scalars(
+            select(CanonicalSessionSource)
+        )
+    )
+
+    assert len(links) == 2
+
+    assert {
+        link.canonical_session_id
+        for link in links
+    } == {
+        final_canonicals[0].id
+    }

@@ -14,15 +14,36 @@ from app.models.entities import (
     CanonicalSessionSource,
     SessionMetricSource,
     SourceActivity,
+    SyncState,
 )
 from app.services.canonicalizer import canonicalize
 from app.services.duplicate_engine import build_groups, score_duplicate
 from app.services.intervals_mapper import from_intervals
 
 
+INTERVALS_ACTIVITIES_RESOURCE = "intervals.activities"
+
+
 class IntervalsSyncService:
     def __init__(self, db: Session):
         self.db = db
+
+    def _get_or_create_sync_state(self, athlete_id: uuid.UUID) -> SyncState:
+        state = self.db.scalar(
+            select(SyncState).where(
+                SyncState.athlete_id == athlete_id,
+                SyncState.resource == INTERVALS_ACTIVITIES_RESOURCE,
+            )
+        )
+        if state is None:
+            state = SyncState(
+                athlete_id=athlete_id,
+                resource=INTERVALS_ACTIVITIES_RESOURCE,
+                status="idle",
+            )
+            self.db.add(state)
+            self.db.flush()
+        return state
 
     def sync(self, athlete_id: uuid.UUID, days: int = 7, source_preference: str = "auto") -> dict:
         athlete = self.db.get(Athlete, athlete_id)
@@ -31,6 +52,44 @@ class IntervalsSyncService:
 
         newest = date.today()
         oldest = newest - timedelta(days=max(1, min(days, 31)))
+
+        state = self._get_or_create_sync_state(athlete_id)
+        state.status = "running"
+        self.db.commit()
+
+        try:
+            result = self._sync_window(
+                athlete_id=athlete_id,
+                oldest=oldest,
+                newest=newest,
+                source_preference=source_preference,
+            )
+        except Exception:
+            self.db.rollback()
+            state = self._get_or_create_sync_state(athlete_id)
+            state.status = "error"
+            self.db.commit()
+            raise
+
+        completed_at = datetime.now(timezone.utc)
+        state = self._get_or_create_sync_state(athlete_id)
+        state.status = "idle"
+        state.last_successful_sync = completed_at
+        self.db.commit()
+
+        result["sync_state"] = {
+            "status": state.status,
+            "last_successful_sync": completed_at.isoformat(),
+        }
+        return result
+
+    def _sync_window(
+        self,
+        athlete_id: uuid.UUID,
+        oldest: date,
+        newest: date,
+        source_preference: str,
+    ) -> dict:
         client = IntervalsClient(settings.intervals_base_url, settings.intervals_api_key, settings.intervals_athlete_id)
         raw = client.list_activities(oldest, newest)
         snapshots = [from_intervals(item) for item in raw]

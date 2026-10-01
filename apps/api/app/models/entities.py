@@ -125,3 +125,20 @@ class SessionMetricSource(Base):
     source_activity_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("source_activities.id", ondelete="CASCADE"))
     quality_score: Mapped[float] = mapped_column(Float)
     selection_reason: Mapped[str] = mapped_column(String(255))
+
+
+
+class SyncState(Base):
+    __tablename__ = "sync_state"
+
+    athlete_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("athletes.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    resource: Mapped[str] = mapped_column(String(64), primary_key=True)
+    last_successful_sync: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    cursor: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="idle")

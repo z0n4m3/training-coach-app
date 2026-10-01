@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
@@ -11,6 +13,7 @@ from app.models.entities import (
     CanonicalSessionSource,
     SessionMetricSource,
     SourceActivity,
+    SyncState,
     User,
 )
 import app.services.sync_service as sync_module
@@ -31,6 +34,15 @@ class FakeIntervalsClient:
 
     def list_activities(self, oldest, newest):
         return self.batches.pop(0)
+
+
+
+class FailingIntervalsClient:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def list_activities(self, oldest, newest):
+        raise RuntimeError("Intervals unavailable")
 
 
 def make_db():
@@ -118,3 +130,44 @@ def test_repeated_sync_is_idempotent_and_preserves_canonical_identity(monkeypatc
     assert len(list(db.scalars(select(CanonicalSessionSource)))) == link_count == 2
     assert len(list(db.scalars(select(SessionMetricSource)))) == metric_count
     assert metric_count > 0
+
+
+
+def test_sync_state_records_success_and_failure(monkeypatch):
+    db = make_db()
+    athlete = make_athlete(db)
+
+    monkeypatch.setattr(sync_module, "IntervalsClient", FakeIntervalsClient)
+    FakeIntervalsClient.batches = [[payload("garmin.json")]]
+
+    result = IntervalsSyncService(db).sync(athlete.id, days=7)
+
+    state = db.scalar(
+        select(SyncState).where(
+            SyncState.athlete_id == athlete.id,
+            SyncState.resource == "intervals.activities",
+        )
+    )
+
+    assert state is not None
+    assert state.status == "idle"
+    assert state.last_successful_sync is not None
+    assert result["sync_state"]["status"] == "idle"
+
+    monkeypatch.setattr(sync_module, "IntervalsClient", FailingIntervalsClient)
+
+    with pytest.raises(RuntimeError, match="Intervals unavailable"):
+        IntervalsSyncService(db).sync(athlete.id, days=7)
+
+    db.expire_all()
+
+    state = db.scalar(
+        select(SyncState).where(
+            SyncState.athlete_id == athlete.id,
+            SyncState.resource == "intervals.activities",
+        )
+    )
+
+    assert state.status == "error"
+    assert state.last_successful_sync is not None
+    assert len(list(db.scalars(select(SyncState)))) == 1

@@ -269,6 +269,13 @@ class PlanService:
             athlete_id,
         )
 
+        planned_date = payload.planned_start_at.date()
+
+        if not week.start_date <= planned_date <= week.end_date:
+            raise ValueError(
+                "Planned session must fall within the training week"
+            )
+
         session = PlannedSession(
             training_week_id=week.id,
             athlete_id=week.athlete_id,

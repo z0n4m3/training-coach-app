@@ -241,3 +241,66 @@ def test_invalid_session_priority_is_rejected():
     )
 
     assert session_response.status_code == 422
+
+
+def test_planned_session_outside_training_week_is_rejected():
+    athlete_id = create_athlete()
+
+    season_response = client.post(
+        "/v1/plans/seasons",
+        json={
+            "athlete_id": athlete_id,
+            "name": "Date validation season",
+            "start_date": "2026-11-01",
+            "end_date": "2027-01-31",
+        },
+    )
+
+    season_id = season_response.json()["id"]
+
+    macrocycle_response = client.post(
+        (
+            f"/v1/plans/seasons/{season_id}/macrocycles"
+            f"?athlete_id={athlete_id}"
+        ),
+        json={
+            "name": "Base",
+            "sequence": 1,
+            "start_date": "2026-11-01",
+            "end_date": "2026-12-31",
+        },
+    )
+
+    macrocycle_id = macrocycle_response.json()["id"]
+
+    week_response = client.post(
+        (
+            f"/v1/plans/macrocycles/{macrocycle_id}/weeks"
+            f"?athlete_id={athlete_id}"
+        ),
+        json={
+            "week_number": 1,
+            "start_date": "2026-11-23",
+            "end_date": "2026-11-29",
+        },
+    )
+
+    week_id = week_response.json()["id"]
+
+    response = client.post(
+        (
+            f"/v1/plans/weeks/{week_id}/sessions"
+            f"?athlete_id={athlete_id}"
+        ),
+        json={
+            "planned_start_at": "2026-12-02T18:00:00+01:00",
+            "name": "Wrong week session",
+            "priority": "SUPPORT",
+        },
+    )
+
+    assert response.status_code == 400
+    assert (
+        response.json()["detail"]
+        == "Planned session must fall within the training week"
+    )

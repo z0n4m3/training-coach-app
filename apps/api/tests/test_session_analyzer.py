@@ -16,10 +16,16 @@ from app.models.entities import (
     User,
 )
 from app.schemas.performance import ZoneSetCreate
+from app.schemas.session_feedback import (
+    SessionFeedbackUpdate,
+)
 from app.services.performance_profile_service import (
     PerformanceProfileService,
 )
 from app.services.session_analyzer import SessionAnalyzer
+from app.services.session_feedback_service import (
+    SessionFeedbackService,
+)
 
 
 def make_db() -> Session:
@@ -538,7 +544,7 @@ def test_indoor_session_uses_historical_indoor_ftp():
 
     assert (
         analysis.analysis_version
-        == "deterministic-v5"
+        == "deterministic-v6"
     )
 
     assert (
@@ -1160,4 +1166,325 @@ def test_interval_workout_is_not_judged_from_session_average():
     assert (
         "stimulus_requires_interval_analysis"
         in analysis.flags
+    )
+
+
+
+def test_session_without_feedback_has_explicit_missing_response():
+    db = make_db()
+    athlete = make_athlete(db)
+
+    session = make_session(
+        db,
+        athlete,
+        fingerprint="no-feedback",
+    )
+
+    result = SessionAnalyzer(
+        db
+    ).analyze(
+        athlete.id,
+        {session.id},
+    )
+
+    db.commit()
+
+    analysis = db.scalar(
+        select(SessionAnalysis).where(
+            SessionAnalysis.canonical_session_id
+            == session.id
+        )
+    )
+
+    subjective = analysis.evidence[
+        "subjective_response"
+    ]
+
+    assert (
+        analysis.analysis_version
+        == "deterministic-v6"
+    )
+
+    assert (
+        subjective["status"]
+        == "missing"
+    )
+
+    assert (
+        result["feedback_missing"]
+        == 1
+    )
+
+
+def test_rpe_is_assessed_against_planned_range():
+    db = make_db()
+    athlete = make_athlete(db)
+
+    plan = make_plan(
+        db,
+        athlete,
+    )
+
+    plan.targets = {
+        "intensity": "endurance",
+        "rpe": [2, 3],
+    }
+
+    db.commit()
+
+    session = make_session(
+        db,
+        athlete,
+        fingerprint="feedback-aligned",
+    )
+
+    link(
+        db,
+        athlete,
+        plan,
+        session,
+    )
+
+    SessionFeedbackService(
+        db
+    ).update(
+        athlete_id=athlete.id,
+        session_id=session.id,
+        payload=SessionFeedbackUpdate(
+            rpe=2.5,
+            leg_fatigue=2,
+            comment="Felt controlled",
+        ),
+    )
+
+    analysis = db.scalar(
+        select(SessionAnalysis).where(
+            SessionAnalysis.canonical_session_id
+            == session.id
+        )
+    )
+
+    subjective = analysis.evidence[
+        "subjective_response"
+    ]
+
+    assert (
+        subjective["rpe"]["status"]
+        == "aligned"
+    )
+
+    assert (
+        subjective["rpe"]["target"]
+        == {
+            "min": 2.0,
+            "max": 3.0,
+        }
+    )
+
+    assert (
+        subjective[
+            "leg_fatigue"
+        ]["status"]
+        == "recorded"
+    )
+
+    assert (
+        subjective["comment_present"]
+        is True
+    )
+
+
+def test_high_subjective_load_is_flagged():
+    db = make_db()
+    athlete = make_athlete(db)
+
+    plan = make_plan(
+        db,
+        athlete,
+    )
+
+    plan.targets = {
+        "rpe": [2, 3],
+    }
+
+    db.commit()
+
+    session = make_session(
+        db,
+        athlete,
+        fingerprint="feedback-hard",
+    )
+
+    link(
+        db,
+        athlete,
+        plan,
+        session,
+    )
+
+    SessionFeedbackService(
+        db
+    ).update(
+        athlete_id=athlete.id,
+        session_id=session.id,
+        payload=SessionFeedbackUpdate(
+            rpe=5,
+            leg_fatigue=4.5,
+        ),
+    )
+
+    analysis = db.scalar(
+        select(SessionAnalysis).where(
+            SessionAnalysis.canonical_session_id
+            == session.id
+        )
+    )
+
+    assert (
+        "rpe_above_target"
+        in analysis.flags
+    )
+
+    assert (
+        "high_leg_fatigue"
+        in analysis.flags
+    )
+
+
+def test_custom_metrics_are_not_hardcoded():
+    db = make_db()
+    athlete = make_athlete(db)
+
+    session = make_session(
+        db,
+        athlete,
+        fingerprint="feedback-custom",
+    )
+
+    SessionFeedbackService(
+        db
+    ).update(
+        athlete_id=athlete.id,
+        session_id=session.id,
+        payload=SessionFeedbackUpdate(
+            rpe=4,
+            custom_metrics={
+                "asymmetry": {
+                    "side": "right",
+                    "severity": 3,
+                }
+            },
+        ),
+    )
+
+    analysis = db.scalar(
+        select(SessionAnalysis).where(
+            SessionAnalysis.canonical_session_id
+            == session.id
+        )
+    )
+
+    subjective = analysis.evidence[
+        "subjective_response"
+    ]
+
+    assert (
+        subjective["custom_metrics"]
+        == {
+            "asymmetry": {
+                "side": "right",
+                "severity": 3,
+            }
+        }
+    )
+
+    assert not any(
+        "asymmetry" in flag
+        for flag in analysis.flags
+    )
+
+
+def test_feedback_patch_recalculates_analysis():
+    db = make_db()
+    athlete = make_athlete(db)
+
+    plan = make_plan(
+        db,
+        athlete,
+    )
+
+    plan.targets = {
+        "rpe": [2, 3],
+    }
+
+    db.commit()
+
+    session = make_session(
+        db,
+        athlete,
+        fingerprint="feedback-reanalysis",
+    )
+
+    link(
+        db,
+        athlete,
+        plan,
+        session,
+    )
+
+    service = SessionFeedbackService(
+        db
+    )
+
+    service.update(
+        athlete_id=athlete.id,
+        session_id=session.id,
+        payload=SessionFeedbackUpdate(
+            rpe=2.5,
+        ),
+    )
+
+    first = db.scalar(
+        select(SessionAnalysis).where(
+            SessionAnalysis.canonical_session_id
+            == session.id
+        )
+    )
+
+    first_id = first.id
+
+    assert (
+        first.evidence[
+            "subjective_response"
+        ]["rpe"]["status"]
+        == "aligned"
+    )
+
+    service.update(
+        athlete_id=athlete.id,
+        session_id=session.id,
+        payload=SessionFeedbackUpdate(
+            rpe=5,
+        ),
+    )
+
+    second = db.scalar(
+        select(SessionAnalysis).where(
+            SessionAnalysis.canonical_session_id
+            == session.id
+        )
+    )
+
+    assert second.id == first_id
+
+    assert (
+        second.evidence[
+            "subjective_response"
+        ]["rpe"]["status"]
+        == "above_target"
+    )
+
+    assert (
+        "rpe_above_target"
+        in second.flags
     )

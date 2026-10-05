@@ -16,6 +16,9 @@ from app.models.entities import (
 from app.schemas.session_feedback import (
     SessionFeedbackUpdate,
 )
+from app.services.session_analyzer import (
+    SessionAnalyzer,
+)
 
 
 class SessionFeedbackService:
@@ -137,10 +140,24 @@ class SessionFeedbackService:
                 "Cannot create empty feedback"
             )
 
-        self.db.commit()
-        self.db.refresh(
-            feedback
-        )
+        try:
+            self.db.flush()
+
+            SessionAnalyzer(
+                self.db
+            ).analyze(
+                athlete_id,
+                {session_id},
+            )
+
+            self.db.commit()
+            self.db.refresh(
+                feedback
+            )
+
+        except Exception:
+            self.db.rollback()
+            raise
 
         return self._serialize(
             feedback

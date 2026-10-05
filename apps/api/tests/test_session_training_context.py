@@ -226,7 +226,7 @@ def test_actual_setup_becomes_session_context():
 
     assert (
         analysis.analysis_version
-        == "deterministic-v5"
+        == "deterministic-v6"
     )
 
     assert (

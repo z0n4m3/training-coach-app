@@ -10,6 +10,7 @@ from app.models.entities import (
     CanonicalSession,
     PlannedSession,
     SessionAnalysis,
+    SessionFeedback,
     SessionMatch,
 )
 from app.services.performance_profile_service import (
@@ -20,10 +21,15 @@ from app.services.training_setup_service import (
 )
 
 
-ANALYSIS_VERSION = "deterministic-v5"
+ANALYSIS_VERSION = "deterministic-v6"
 
 WITHIN_TOLERANCE = 0.10
 MAJOR_DEVIATION = 0.25
+
+# Product heuristic, not a diagnosis.
+# >= 4/5 means the signal should be visible
+# to later coaching logic.
+HIGH_LEG_FATIGUE = 4.0
 
 
 def _comparison(
@@ -366,6 +372,175 @@ def _stimulus_assessment(
 
 
 
+def _rpe_target(
+    targets: dict[str, Any] | None,
+) -> tuple[dict | None, str | None]:
+    if not targets:
+        return None, None
+
+    raw = targets.get("rpe")
+
+    if raw is None:
+        return None, None
+
+    if (
+        isinstance(raw, (list, tuple))
+        and len(raw) == 2
+    ):
+        minimum_raw = raw[0]
+        maximum_raw = raw[1]
+
+    elif isinstance(raw, dict):
+        try:
+            minimum_raw = raw["min"]
+            maximum_raw = raw["max"]
+        except KeyError:
+            return None, "invalid"
+
+    else:
+        return None, "invalid"
+
+    try:
+        minimum = float(minimum_raw)
+        maximum = float(maximum_raw)
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return None, "invalid"
+
+    if (
+        minimum < 0
+        or maximum > 10
+        or minimum > maximum
+    ):
+        return None, "invalid"
+
+    return {
+        "min": round(minimum, 2),
+        "max": round(maximum, 2),
+    }, None
+
+
+def _subjective_response(
+    *,
+    feedback: SessionFeedback | None,
+    plan: PlannedSession | None,
+) -> tuple[dict, list[str]]:
+    flags: list[str] = []
+
+    if feedback is None:
+        return {
+            "status": "missing",
+            "feedback_id": None,
+            "rpe": {
+                "status": "missing",
+                "actual": None,
+                "target": None,
+            },
+            "leg_fatigue": {
+                "status": "missing",
+                "actual": None,
+                "high_threshold":
+                    HIGH_LEG_FATIGUE,
+            },
+            "comment": None,
+            "comment_present": False,
+            "custom_metrics": {},
+        }, flags
+
+    target, target_error = (
+        _rpe_target(
+            None
+            if plan is None
+            else plan.targets
+        )
+    )
+
+    if target_error is not None:
+        flags.append(
+            "subjective_rpe_target_invalid"
+        )
+
+    if feedback.rpe is None:
+        rpe_status = "missing"
+
+    elif target_error is not None:
+        rpe_status = "target_invalid"
+
+    elif target is None:
+        rpe_status = "recorded"
+
+    elif feedback.rpe < target["min"]:
+        rpe_status = "below_target"
+        flags.append(
+            "rpe_below_target"
+        )
+
+    elif feedback.rpe > target["max"]:
+        rpe_status = "above_target"
+        flags.append(
+            "rpe_above_target"
+        )
+
+    else:
+        rpe_status = "aligned"
+
+    if feedback.leg_fatigue is None:
+        leg_status = "missing"
+
+    elif (
+        feedback.leg_fatigue
+        >= HIGH_LEG_FATIGUE
+    ):
+        leg_status = "high"
+        flags.append(
+            "high_leg_fatigue"
+        )
+
+    else:
+        leg_status = "recorded"
+
+    comment_present = bool(
+        feedback.comment
+        and feedback.comment.strip()
+    )
+
+    return {
+        "status": "available",
+        "feedback_id":
+            str(feedback.id),
+        "rpe": {
+            "status":
+                rpe_status,
+            "actual":
+                feedback.rpe,
+            "target":
+                target,
+        },
+        "leg_fatigue": {
+            "status":
+                leg_status,
+            "actual":
+                feedback.leg_fatigue,
+            "high_threshold":
+                HIGH_LEG_FATIGUE,
+        },
+        "comment":
+            feedback.comment,
+        "comment_present":
+            comment_present,
+
+        # Athlete-specific data passes through,
+        # but core rules deliberately do not
+        # interpret it.
+        "custom_metrics":
+            feedback.custom_metrics
+            or {},
+    }, flags
+
+
 def _setup_assessment(
     planned_setup_id:
         uuid.UUID | None,
@@ -416,6 +591,8 @@ class SessionAnalyzer:
             "matched": 0,
             "unplanned": 0,
             "match_conflict": 0,
+            "feedback_available": 0,
+            "feedback_missing": 0,
             "duration_within": 0,
             "duration_minor": 0,
             "duration_major": 0,
@@ -495,6 +672,16 @@ class SessionAnalyzer:
             result["analyzed"] += 1
             result[
                 payload["classification"]
+            ] += 1
+
+            subjective_status = (
+                payload["evidence"][
+                    "subjective_response"
+                ]["status"]
+            )
+
+            result[
+                f"feedback_{subjective_status}"
             ] += 1
 
             if (
@@ -1149,6 +1336,26 @@ class SessionAnalyzer:
             )
         )
 
+        feedback = self.db.scalar(
+            select(
+                SessionFeedback
+            ).where(
+                SessionFeedback.athlete_id
+                == athlete_id,
+                SessionFeedback
+                .canonical_session_id
+                == canonical.id,
+            )
+        )
+
+        (
+            subjective_response,
+            subjective_flags,
+        ) = _subjective_response(
+            feedback=feedback,
+            plan=None,
+        )
+
         matches = self.db.scalars(
             select(SessionMatch).where(
                 SessionMatch.athlete_id
@@ -1193,6 +1400,7 @@ class SessionAnalyzer:
                     "no_planned_session_match",
                     *training_setup_flags,
                     *performance_flags,
+                    *subjective_flags,
                 ],
                 "evidence": {
                     "actual": actual,
@@ -1200,6 +1408,8 @@ class SessionAnalyzer:
                         performance,
                     "training_setup":
                         training_setup,
+                    "subjective_response":
+                        subjective_response,
                     "match_count": 0,
                 },
             }
@@ -1213,6 +1423,7 @@ class SessionAnalyzer:
                     "multiple_plan_matches",
                     *training_setup_flags,
                     *performance_flags,
+                    *subjective_flags,
                 ],
                 "evidence": {
                     "actual": actual,
@@ -1220,6 +1431,8 @@ class SessionAnalyzer:
                         performance,
                     "training_setup":
                         training_setup,
+                    "subjective_response":
+                        subjective_response,
                     "match_count":
                         len(matches),
                 },
@@ -1244,6 +1457,7 @@ class SessionAnalyzer:
                     "invalid_plan_match",
                     *training_setup_flags,
                     *performance_flags,
+                    *subjective_flags,
                 ],
                 "evidence": {
                     "actual": actual,
@@ -1251,8 +1465,18 @@ class SessionAnalyzer:
                         performance,
                     "training_setup":
                         training_setup,
+                    "subjective_response":
+                        subjective_response,
                 },
             }
+
+        (
+            subjective_response,
+            subjective_flags,
+        ) = _subjective_response(
+            feedback=feedback,
+            plan=plan,
+        )
 
         duration = _duration_assessment(
             canonical.duration_s,
@@ -1270,6 +1494,7 @@ class SessionAnalyzer:
             *training_setup_flags,
             *performance_flags,
             *stimulus_flags,
+            *subjective_flags,
         ]
 
         setup_assessment = (
@@ -1326,6 +1551,8 @@ class SessionAnalyzer:
                     performance,
                 "training_setup":
                     training_setup,
+                "subjective_response":
+                    subjective_response,
                 "setup_assessment":
                     setup_assessment,
                 "duration_assessment":

@@ -823,3 +823,200 @@ class TrainingSetupDevice(Base):
         DateTime(timezone=True),
         default=utcnow,
     )
+
+
+class PerformanceTest(Base):
+    __tablename__ = "performance_tests"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    athlete_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(
+            "athletes.id",
+            ondelete="CASCADE",
+        ),
+        index=True,
+    )
+
+    canonical_session_id: Mapped[
+        uuid.UUID | None
+    ] = mapped_column(
+        ForeignKey(
+            "canonical_sessions.id",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+        index=True,
+    )
+
+    training_setup_id: Mapped[
+        uuid.UUID | None
+    ] = mapped_column(
+        ForeignKey(
+            "training_setups.id",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+        index=True,
+    )
+
+    sport: Mapped[str] = mapped_column(
+        String(64),
+        default="cycling",
+    )
+
+    discipline: Mapped[
+        str | None
+    ] = mapped_column(
+        String(32),
+        nullable=True,
+    )
+
+    environment: Mapped[str] = mapped_column(
+        String(32),
+    )
+
+    test_type: Mapped[str] = mapped_column(
+        String(32),
+    )
+
+    protocol: Mapped[str] = mapped_column(
+        String(64),
+    )
+
+    tested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        index=True,
+    )
+
+    protocol_data: Mapped[
+        dict[str, Any]
+    ] = mapped_column(
+        JSON,
+        default=dict,
+    )
+
+    notes: Mapped[
+        str | None
+    ] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+
+class PerformanceTestResult(Base):
+    __tablename__ = "performance_test_results"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "performance_test_id",
+            "power_source_id",
+            name=(
+                "uq_performance_test_"
+                "power_source"
+            ),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    performance_test_id: Mapped[
+        uuid.UUID
+    ] = mapped_column(
+        ForeignKey(
+            "performance_tests.id",
+            ondelete="CASCADE",
+        ),
+        index=True,
+    )
+
+    athlete_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(
+            "athletes.id",
+            ondelete="CASCADE",
+        ),
+        index=True,
+    )
+
+    power_source_id: Mapped[
+        uuid.UUID
+    ] = mapped_column(
+        ForeignKey(
+            "devices.id",
+            ondelete="RESTRICT",
+        ),
+        index=True,
+    )
+
+    observed_power_w: Mapped[
+        float
+    ] = mapped_column(
+        Float,
+    )
+
+    measurement_window_s: Mapped[
+        float | None
+    ] = mapped_column(
+        Float,
+        nullable=True,
+    )
+
+    estimated_ftp_w: Mapped[
+        float | None
+    ] = mapped_column(
+        Float,
+        nullable=True,
+    )
+
+    estimate_method: Mapped[str] = mapped_column(
+        String(32),
+        default="none",
+    )
+
+    confidence: Mapped[str] = mapped_column(
+        String(16),
+        default="medium",
+    )
+
+    derivation: Mapped[
+        dict[str, Any]
+    ] = mapped_column(
+        JSON,
+        default=dict,
+    )
+
+    metrics: Mapped[
+        dict[str, Any]
+    ] = mapped_column(
+        JSON,
+        default=dict,
+    )
+
+    notes: Mapped[
+        str | None
+    ] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+    )

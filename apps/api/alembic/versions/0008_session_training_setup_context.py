@@ -1,6 +1,6 @@
 """Attach training setups to sessions
 
-Revision ID: 0008_session_training_setup_context
+Revision ID: 0008_session_setup_context
 Revises: 0007_training_setups
 """
 
@@ -12,7 +12,7 @@ from sqlalchemy.dialects import postgresql
 
 
 revision: str = (
-    "0008_session_training_setup_context"
+    "0008_session_setup_context"
 )
 
 down_revision: Union[str, None] = (

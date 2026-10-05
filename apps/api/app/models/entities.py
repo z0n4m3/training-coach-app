@@ -1020,3 +1020,143 @@ class PerformanceTestResult(Base):
         DateTime(timezone=True),
         default=utcnow,
     )
+
+
+class PerformanceChangeProposal(Base):
+    __tablename__ = "performance_change_proposals"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    athlete_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(
+            "athletes.id",
+            ondelete="CASCADE",
+        ),
+        index=True,
+    )
+
+    proposal_type: Mapped[str] = mapped_column(
+        String(32),
+        default="ftp",
+    )
+
+    sport: Mapped[str] = mapped_column(
+        String(64),
+        default="cycling",
+    )
+
+    discipline: Mapped[
+        str | None
+    ] = mapped_column(
+        String(32),
+        nullable=True,
+    )
+
+    environment: Mapped[str] = mapped_column(
+        String(32),
+    )
+
+    power_source_id: Mapped[
+        uuid.UUID
+    ] = mapped_column(
+        ForeignKey(
+            "devices.id",
+            ondelete="RESTRICT",
+        ),
+        index=True,
+    )
+
+    source_performance_test_id: Mapped[
+        uuid.UUID
+    ] = mapped_column(
+        ForeignKey(
+            "performance_tests.id",
+            ondelete="RESTRICT",
+        ),
+        index=True,
+    )
+
+    baseline_zone_set_id: Mapped[
+        uuid.UUID | None
+    ] = mapped_column(
+        ForeignKey(
+            "zone_sets.id",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
+
+    baseline_ftp_w: Mapped[
+        float | None
+    ] = mapped_column(
+        Float,
+        nullable=True,
+    )
+
+    proposed_ftp_w: Mapped[float] = mapped_column(
+        Float,
+    )
+
+    confidence: Mapped[
+        str | None
+    ] = mapped_column(
+        String(16),
+        nullable=True,
+    )
+
+    recommended_effective_from: Mapped[
+        datetime
+    ] = mapped_column(
+        DateTime(timezone=True),
+    )
+
+    evidence: Mapped[
+        dict[str, Any]
+    ] = mapped_column(
+        JSON,
+        default=dict,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(32),
+        default="pending",
+        index=True,
+    )
+
+    decision_note: Mapped[
+        str | None
+    ] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    decided_at: Mapped[
+        datetime | None
+    ] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    applied_zone_set_id: Mapped[
+        uuid.UUID | None
+    ] = mapped_column(
+        ForeignKey(
+            "zone_sets.id",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )

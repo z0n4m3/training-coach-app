@@ -4,6 +4,7 @@ from app.api.routes import (
     dev,
     health,
     performance,
+    performance_proposals,
     performance_tests,
     plans,
     sessions,
@@ -18,6 +19,7 @@ app.include_router(sync.router)
 app.include_router(sessions.router)
 app.include_router(plans.router)
 app.include_router(performance.router)
+app.include_router(performance_proposals.router)
 app.include_router(performance_tests.router)
 app.include_router(cycling_equipment.router)
 app.include_router(training_setups.router)

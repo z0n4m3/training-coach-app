@@ -15,8 +15,16 @@ from app.models.entities import (
     PerformanceChangeProposal,
     PerformanceTest,
 )
+from app.schemas.performance import (
+    ZoneSetCreate,
+)
 from app.schemas.performance_proposals import (
+    FtpProposalApproval,
     FtpProposalCreate,
+    PerformanceProposalDecision,
+)
+from app.services.performance_profile_service import (
+    PerformanceProfileService,
 )
 from app.services.performance_test_analysis_service import (
     PerformanceTestAnalysisService,
@@ -29,6 +37,10 @@ ALLOWED_STATUSES = {
     "rejected",
     "superseded",
 }
+
+
+class ProposalConflictError(ValueError):
+    pass
 
 
 class PerformanceProposalService:
@@ -394,6 +406,282 @@ class PerformanceProposalService:
             self._serialize(row)
             for row in rows
         ]
+
+    def approve_ftp_proposal(
+        self,
+        *,
+        proposal_id: uuid.UUID,
+        payload: FtpProposalApproval,
+    ) -> dict:
+        self._athlete(
+            payload.athlete_id
+        )
+
+        proposal = self.db.scalar(
+            select(
+                PerformanceChangeProposal
+            )
+            .where(
+                PerformanceChangeProposal.id
+                == proposal_id,
+                PerformanceChangeProposal
+                .athlete_id
+                == payload.athlete_id,
+            )
+            .with_for_update()
+        )
+
+        if proposal is None:
+            raise LookupError(
+                "Performance proposal not found"
+            )
+
+        if proposal.proposal_type != "ftp":
+            raise ValueError(
+                "Proposal is not an FTP proposal"
+            )
+
+        # Repeated approval is idempotent.
+        if proposal.status == "approved":
+            return self._serialize(
+                proposal
+            )
+
+        if proposal.status != "pending":
+            raise ValueError(
+                (
+                    "Only a pending proposal "
+                    "can be approved"
+                )
+            )
+
+        decision_at = datetime.now(
+            timezone.utc
+        )
+
+        profile_service = (
+            PerformanceProfileService(
+                self.db
+            )
+        )
+
+        current = (
+            profile_service
+            .effective_zone_set(
+                athlete_id=
+                    proposal.athlete_id,
+                sport=
+                    proposal.sport,
+                environment=
+                    proposal.environment,
+                discipline=
+                    proposal.discipline,
+                power_source_id=
+                    proposal.power_source_id,
+                at=decision_at,
+            )
+        )
+
+        current_zone_set_id = (
+            None
+            if current is None
+            else current["id"]
+        )
+
+        current_ftp_w = (
+            None
+            if current is None
+            else current["ftp_w"]
+        )
+
+        baseline_is_current = (
+            current_zone_set_id
+            == proposal.baseline_zone_set_id
+            and current_ftp_w
+            == proposal.baseline_ftp_w
+        )
+
+        if not baseline_is_current:
+            proposal.status = (
+                "superseded"
+            )
+            proposal.decided_at = (
+                decision_at
+            )
+            proposal.decision_note = (
+                "Baseline changed before approval"
+            )
+
+            self.db.commit()
+
+            raise ProposalConflictError(
+                (
+                    "FTP proposal is stale because "
+                    "the baseline profile changed"
+                )
+            )
+
+        source_test = self.db.get(
+            PerformanceTest,
+            proposal
+            .source_performance_test_id,
+        )
+
+        if source_test is None:
+            raise LookupError(
+                "Source performance test not found"
+            )
+
+        effective_from = (
+            payload.effective_from
+            if payload.effective_from
+            is not None
+            else proposal
+            .recommended_effective_from
+        )
+
+        effective_from = self._aware_utc(
+            effective_from
+        )
+
+        tested_at = self._aware_utc(
+            source_test.tested_at
+        )
+
+        if (
+            effective_from is None
+            or tested_at is None
+        ):
+            raise ValueError(
+                "FTP effective date is invalid"
+            )
+
+        if effective_from < tested_at:
+            raise ValueError(
+                (
+                    "FTP cannot become effective "
+                    "before its source test"
+                )
+            )
+
+        try:
+            zone_set = (
+                profile_service
+                .create_zone_set(
+                    ZoneSetCreate(
+                        athlete_id=
+                            proposal.athlete_id,
+                        sport=
+                            proposal.sport,
+                        environment=
+                            proposal.environment,
+                        discipline=
+                            proposal.discipline,
+                        power_source_id=
+                            proposal
+                            .power_source_id,
+                        effective_from=
+                            effective_from,
+                        ftp_w=
+                            proposal
+                            .proposed_ftp_w,
+                        source=
+                            "athlete_approved",
+                        note=(
+                            "Approved FTP proposal "
+                            f"{proposal.id}"
+                        ),
+                    ),
+                    commit=False,
+                )
+            )
+
+            proposal.status = (
+                "approved"
+            )
+            proposal.decided_at = (
+                decision_at
+            )
+            proposal.decision_note = (
+                payload.note
+            )
+            proposal.applied_zone_set_id = (
+                zone_set["id"]
+            )
+
+            self.db.commit()
+            self.db.refresh(
+                proposal
+            )
+
+        except Exception:
+            self.db.rollback()
+            raise
+
+        return self._serialize(
+            proposal
+        )
+
+    def reject_proposal(
+        self,
+        *,
+        proposal_id: uuid.UUID,
+        payload:
+            PerformanceProposalDecision,
+    ) -> dict:
+        self._athlete(
+            payload.athlete_id
+        )
+
+        proposal = self.db.scalar(
+            select(
+                PerformanceChangeProposal
+            )
+            .where(
+                PerformanceChangeProposal.id
+                == proposal_id,
+                PerformanceChangeProposal
+                .athlete_id
+                == payload.athlete_id,
+            )
+            .with_for_update()
+        )
+
+        if proposal is None:
+            raise LookupError(
+                "Performance proposal not found"
+            )
+
+        # Repeated rejection is idempotent.
+        if proposal.status == "rejected":
+            return self._serialize(
+                proposal
+            )
+
+        if proposal.status != "pending":
+            raise ValueError(
+                (
+                    "Only a pending proposal "
+                    "can be rejected"
+                )
+            )
+
+        proposal.status = "rejected"
+        proposal.decided_at = datetime.now(
+            timezone.utc
+        )
+        proposal.decision_note = (
+            payload.note
+        )
+
+        self.db.commit()
+        self.db.refresh(
+            proposal
+        )
+
+        return self._serialize(
+            proposal
+        )
 
     def _athlete(
         self,

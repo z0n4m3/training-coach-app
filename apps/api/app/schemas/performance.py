@@ -68,6 +68,7 @@ class ZoneSetCreate(BaseModel):
         "test",
         "import",
         "ai_approved",
+        "athlete_approved",
     ] = "manual"
 
     note: str | None = None

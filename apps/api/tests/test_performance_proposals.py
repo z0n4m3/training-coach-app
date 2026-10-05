@@ -22,7 +22,9 @@ from app.schemas.performance import (
     ZoneSetCreate,
 )
 from app.schemas.performance_proposals import (
+    FtpProposalApproval,
     FtpProposalCreate,
+    PerformanceProposalDecision,
 )
 from app.schemas.performance_tests import (
     PerformanceTestCreate,
@@ -33,6 +35,7 @@ from app.services.performance_profile_service import (
 )
 from app.services.performance_proposal_service import (
     PerformanceProposalService,
+    ProposalConflictError,
 )
 from app.services.performance_test_service import (
     PerformanceTestService,
@@ -640,3 +643,453 @@ def test_no_change_does_not_create_proposal():
     )
 
     assert rows == []
+
+
+
+def make_pending_proposal(
+    db: Session,
+):
+    (
+        athlete,
+        trainer,
+        _,
+    ) = make_fixture(db)
+
+    baseline = create_baseline(
+        db,
+        athlete=athlete,
+        source=trainer,
+        ftp_w=225,
+        effective_from=datetime(
+            2026,
+            9,
+            1,
+            tzinfo=timezone.utc,
+        ),
+    )
+
+    record_ftp(
+        db,
+        athlete=athlete,
+        source=trainer,
+        tested_at=datetime(
+            2026,
+            9,
+            18,
+            tzinfo=timezone.utc,
+        ),
+        observed_power_w=242,
+        estimated_ftp_w=230,
+    )
+
+    service = (
+        PerformanceProposalService(
+            db
+        )
+    )
+
+    proposal = (
+        service.create_ftp_proposal(
+            FtpProposalCreate(
+                athlete_id=
+                    athlete.id,
+                power_source_id=
+                    trainer.id,
+                environment="indoor",
+                discipline="road",
+                at=datetime(
+                    2026,
+                    10,
+                    5,
+                    tzinfo=timezone.utc,
+                ),
+            )
+        )
+    )
+
+    return (
+        athlete,
+        trainer,
+        baseline,
+        proposal,
+        service,
+    )
+
+
+def test_approve_ftp_proposal_creates_versioned_zone_set():
+    db = make_db()
+
+    (
+        athlete,
+        trainer,
+        baseline,
+        proposal,
+        service,
+    ) = make_pending_proposal(db)
+
+    before = list(
+        db.scalars(
+            select(ZoneSet)
+        )
+    )
+
+    approved = (
+        service.approve_ftp_proposal(
+            proposal_id=
+                proposal["id"],
+            payload=
+                FtpProposalApproval(
+                    athlete_id=
+                        athlete.id,
+                    note=(
+                        "Accept test result"
+                    ),
+                ),
+        )
+    )
+
+    after = list(
+        db.scalars(
+            select(ZoneSet)
+        )
+    )
+
+    assert (
+        approved["status"]
+        == "approved"
+    )
+
+    assert (
+        approved[
+            "requires_athlete_approval"
+        ]
+        is False
+    )
+
+    assert (
+        approved[
+            "decision_note"
+        ]
+        == "Accept test result"
+    )
+
+    assert (
+        approved[
+            "applied_zone_set_id"
+        ]
+        is not None
+    )
+
+    assert len(before) == 1
+    assert len(after) == 2
+
+    old = db.get(
+        ZoneSet,
+        baseline["id"],
+    )
+
+    new = db.get(
+        ZoneSet,
+        approved[
+            "applied_zone_set_id"
+        ],
+    )
+
+    assert old.ftp_w == 225
+    assert new.ftp_w == 230
+
+    assert (
+        new.source
+        == "athlete_approved"
+    )
+
+    assert (
+        new.effective_from
+        == datetime(
+            2026,
+            9,
+            18,
+        )
+        or new.effective_from
+        == datetime(
+            2026,
+            9,
+            18,
+            tzinfo=timezone.utc,
+        )
+    )
+
+
+def test_repeated_approval_is_idempotent():
+    db = make_db()
+
+    (
+        athlete,
+        _,
+        _,
+        proposal,
+        service,
+    ) = make_pending_proposal(db)
+
+    payload = FtpProposalApproval(
+        athlete_id=athlete.id,
+    )
+
+    first = (
+        service.approve_ftp_proposal(
+            proposal_id=
+                proposal["id"],
+            payload=payload,
+        )
+    )
+
+    second = (
+        service.approve_ftp_proposal(
+            proposal_id=
+                proposal["id"],
+            payload=payload,
+        )
+    )
+
+    zone_sets = list(
+        db.scalars(
+            select(ZoneSet)
+        )
+    )
+
+    assert (
+        first[
+            "applied_zone_set_id"
+        ]
+        == second[
+            "applied_zone_set_id"
+        ]
+    )
+
+    assert len(zone_sets) == 2
+
+
+def test_reject_proposal_does_not_create_zone_set():
+    db = make_db()
+
+    (
+        athlete,
+        _,
+        _,
+        proposal,
+        service,
+    ) = make_pending_proposal(db)
+
+    before = list(
+        db.scalars(
+            select(ZoneSet)
+        )
+    )
+
+    rejected = (
+        service.reject_proposal(
+            proposal_id=
+                proposal["id"],
+            payload=
+                PerformanceProposalDecision(
+                    athlete_id=
+                        athlete.id,
+                    note="Keep current FTP",
+                ),
+        )
+    )
+
+    after = list(
+        db.scalars(
+            select(ZoneSet)
+        )
+    )
+
+    assert (
+        rejected["status"]
+        == "rejected"
+    )
+
+    assert (
+        rejected[
+            "decision_note"
+        ]
+        == "Keep current FTP"
+    )
+
+    assert (
+        rejected[
+            "applied_zone_set_id"
+        ]
+        is None
+    )
+
+    assert (
+        len(before)
+        == len(after)
+        == 1
+    )
+
+
+def test_stale_baseline_cannot_be_approved():
+    db = make_db()
+
+    (
+        athlete,
+        trainer,
+        _,
+        proposal,
+        service,
+    ) = make_pending_proposal(db)
+
+    create_baseline(
+        db,
+        athlete=athlete,
+        source=trainer,
+        ftp_w=228,
+        effective_from=datetime(
+            2026,
+            10,
+            1,
+            tzinfo=timezone.utc,
+        ),
+    )
+
+    before = list(
+        db.scalars(
+            select(ZoneSet)
+        )
+    )
+
+    with pytest.raises(
+        ProposalConflictError,
+        match="baseline profile changed",
+    ):
+        service.approve_ftp_proposal(
+            proposal_id=
+                proposal["id"],
+            payload=
+                FtpProposalApproval(
+                    athlete_id=
+                        athlete.id,
+                ),
+        )
+
+    after = list(
+        db.scalars(
+            select(ZoneSet)
+        )
+    )
+
+    loaded = service.get(
+        athlete_id=athlete.id,
+        proposal_id=
+            proposal["id"],
+    )
+
+    assert (
+        loaded["status"]
+        == "superseded"
+    )
+
+    assert (
+        loaded[
+            "applied_zone_set_id"
+        ]
+        is None
+    )
+
+    assert (
+        len(before)
+        == len(after)
+        == 2
+    )
+
+
+def test_ftp_cannot_be_effective_before_source_test():
+    db = make_db()
+
+    (
+        athlete,
+        _,
+        _,
+        proposal,
+        service,
+    ) = make_pending_proposal(db)
+
+    with pytest.raises(
+        ValueError,
+        match="before its source test",
+    ):
+        service.approve_ftp_proposal(
+            proposal_id=
+                proposal["id"],
+            payload=
+                FtpProposalApproval(
+                    athlete_id=
+                        athlete.id,
+                    effective_from=
+                        datetime(
+                            2026,
+                            9,
+                            17,
+                            tzinfo=
+                                timezone.utc,
+                        ),
+                ),
+        )
+
+    loaded = service.get(
+        athlete_id=athlete.id,
+        proposal_id=
+            proposal["id"],
+    )
+
+    assert (
+        loaded["status"]
+        == "pending"
+    )
+
+    zone_sets = list(
+        db.scalars(
+            select(ZoneSet)
+        )
+    )
+
+    assert len(zone_sets) == 1
+
+
+def test_approved_proposal_cannot_be_rejected():
+    db = make_db()
+
+    (
+        athlete,
+        _,
+        _,
+        proposal,
+        service,
+    ) = make_pending_proposal(db)
+
+    service.approve_ftp_proposal(
+        proposal_id=
+            proposal["id"],
+        payload=
+            FtpProposalApproval(
+                athlete_id=
+                    athlete.id,
+            ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="pending proposal",
+    ):
+        service.reject_proposal(
+            proposal_id=
+                proposal["id"],
+            payload=
+                PerformanceProposalDecision(
+                    athlete_id=
+                        athlete.id,
+                ),
+        )

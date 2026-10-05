@@ -26,3 +26,18 @@ class FtpProposalCreate(BaseModel):
     )
 
     at: datetime | None = None
+
+
+class PerformanceProposalDecision(BaseModel):
+    athlete_id: uuid.UUID
+
+    note: str | None = Field(
+        default=None,
+        max_length=2000,
+    )
+
+
+class FtpProposalApproval(
+    PerformanceProposalDecision
+):
+    effective_from: datetime | None = None

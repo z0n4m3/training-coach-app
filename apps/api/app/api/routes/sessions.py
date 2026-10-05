@@ -5,6 +5,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.schemas.session_context import (
+    SessionTrainingSetupUpdate,
+)
+from app.services.session_context_service import (
+    SessionContextService,
+)
 from app.services.session_query_service import SessionQueryService
 
 router = APIRouter(prefix="/v1/sessions", tags=["sessions"])
@@ -35,6 +41,38 @@ def list_sessions(
         "items": items,
         "count": len(items),
     }
+
+
+@router.patch(
+    "/{session_id}/training-setup"
+)
+def set_training_setup(
+    session_id: uuid.UUID,
+    athlete_id: uuid.UUID,
+    payload: SessionTrainingSetupUpdate,
+    db: Session = Depends(get_db),
+):
+    try:
+        return SessionContextService(
+            db
+        ).set_training_setup(
+            athlete_id=athlete_id,
+            session_id=session_id,
+            training_setup_id=
+                payload.training_setup_id,
+        )
+
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc),
+        ) from exc
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
 
 
 @router.get("/{session_id}")

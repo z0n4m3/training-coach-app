@@ -13,6 +13,9 @@ from app.models.entities import (
     SessionMetricSource,
     SourceActivity,
 )
+from app.services.training_setup_service import (
+    TrainingSetupService,
+)
 
 
 class SessionQueryService:
@@ -92,6 +95,18 @@ class SessionQueryService:
 
         result = self._summary(session)
 
+        result["training_setup"] = (
+            None
+            if session.training_setup_id
+            is None
+            else TrainingSetupService(
+                self.db
+            ).get(
+                athlete_id,
+                session.training_setup_id,
+            )
+        )
+
         result["analysis"] = (
             None
             if analysis is None
@@ -150,6 +165,8 @@ class SessionQueryService:
             "athlete_id": session.athlete_id,
             "sport": session.sport,
             "indoor": session.indoor,
+            "training_setup_id":
+                session.training_setup_id,
             "start_at": session.start_at,
             "end_at": session.end_at,
             "duration_s": session.duration_s,

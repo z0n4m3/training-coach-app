@@ -5,12 +5,14 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.domain.sport import normalize_sport
 from app.models.entities import (
     Athlete,
     GoalEvent,
     Macrocycle,
     PlannedSession,
     Season,
+    TrainingSetup,
     TrainingWeek,
 )
 from app.schemas.plan import (
@@ -276,12 +278,45 @@ class PlanService:
                 "Planned session must fall within the training week"
             )
 
+        if payload.training_setup_id is not None:
+            setup = self.db.scalar(
+                select(TrainingSetup).where(
+                    TrainingSetup.id
+                    == payload.training_setup_id,
+                    TrainingSetup.athlete_id
+                    == athlete_id,
+                )
+            )
+
+            if setup is None:
+                raise LookupError(
+                    "Training setup not found"
+                )
+
+            if not setup.active:
+                raise ValueError(
+                    "Training setup is inactive"
+                )
+
+            if (
+                normalize_sport(payload.sport)
+                != setup.sport
+            ):
+                raise ValueError(
+                    (
+                        "Training setup sport does not "
+                        "match planned session sport"
+                    )
+                )
+
         session = PlannedSession(
             training_week_id=week.id,
             athlete_id=week.athlete_id,
             planned_start_at=payload.planned_start_at,
             name=payload.name,
             sport=payload.sport,
+            training_setup_id=
+                payload.training_setup_id,
             session_type=payload.session_type,
             priority=payload.priority,
             status="planned",
@@ -410,6 +445,8 @@ class PlanService:
             "planned_start_at": session.planned_start_at,
             "name": session.name,
             "sport": session.sport,
+            "training_setup_id":
+                session.training_setup_id,
             "session_type": session.session_type,
             "priority": session.priority,
             "status": session.status,

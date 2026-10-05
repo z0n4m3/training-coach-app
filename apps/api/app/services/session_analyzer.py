@@ -15,9 +15,12 @@ from app.models.entities import (
 from app.services.performance_profile_service import (
     PerformanceProfileService,
 )
+from app.services.training_setup_service import (
+    TrainingSetupService,
+)
 
 
-ANALYSIS_VERSION = "deterministic-v3"
+ANALYSIS_VERSION = "deterministic-v4"
 
 WITHIN_TOLERANCE = 0.10
 MAJOR_DEVIATION = 0.25
@@ -362,6 +365,43 @@ def _stimulus_assessment(
     }, flags
 
 
+
+def _setup_assessment(
+    planned_setup_id:
+        uuid.UUID | None,
+    actual_setup_id:
+        uuid.UUID | None,
+) -> dict:
+    planned = (
+        None
+        if planned_setup_id is None
+        else str(planned_setup_id)
+    )
+
+    actual = (
+        None
+        if actual_setup_id is None
+        else str(actual_setup_id)
+    )
+
+    if planned_setup_id is None:
+        status = "not_specified"
+    elif actual_setup_id is None:
+        status = "actual_missing"
+    elif planned_setup_id == actual_setup_id:
+        status = "matched"
+    else:
+        status = "changed"
+
+    return {
+        "status": status,
+        "planned_training_setup_id":
+            planned,
+        "actual_training_setup_id":
+            actual,
+    }
+
+
 class SessionAnalyzer:
     def __init__(self, db: Session):
         self.db = db
@@ -485,19 +525,140 @@ class SessionAnalyzer:
 
         return result
 
-    def _performance_evidence(
+    def _training_setup_evidence(
         self,
         athlete_id: uuid.UUID,
         canonical: CanonicalSession,
     ) -> tuple[dict, list[str]]:
         flags: list[str] = []
 
+        if canonical.training_setup_id is None:
+            return {
+                "status": "missing",
+                "training_setup_id": None,
+                "environment": None,
+                "discipline": None,
+                "bike_id": None,
+                "primary_power_source_id":
+                    None,
+                "secondary_power_source_id":
+                    None,
+            }, flags
+
+        try:
+            setup = TrainingSetupService(
+                self.db
+            ).get(
+                athlete_id,
+                canonical.training_setup_id,
+            )
+        except LookupError:
+            flags.append(
+                "training_setup_invalid"
+            )
+
+            return {
+                "status": "invalid",
+                "training_setup_id":
+                    str(
+                        canonical.training_setup_id
+                    ),
+                "environment": None,
+                "discipline": None,
+                "bike_id": None,
+                "primary_power_source_id":
+                    None,
+                "secondary_power_source_id":
+                    None,
+            }, flags
+
+        expected_environment = None
+
         if canonical.indoor is True:
+            expected_environment = "indoor"
+        elif canonical.indoor is False:
+            expected_environment = "outdoor"
+
+        if (
+            expected_environment is not None
+            and expected_environment
+            != setup["environment"]
+        ):
+            flags.append(
+                "training_setup_environment_conflict"
+            )
+
+        primary = setup[
+            "device_roles"
+        ].get(
+            "primary_power_source"
+        )
+
+        secondary = setup[
+            "device_roles"
+        ].get(
+            "secondary_power_source"
+        )
+
+        return {
+            "status": "available",
+            "training_setup_id":
+                str(setup["id"]),
+            "name": setup["name"],
+            "environment":
+                setup["environment"],
+            "discipline":
+                setup["discipline"],
+            "bike_id":
+                str(setup["bike"]["id"]),
+            "primary_power_source_id":
+                (
+                    None
+                    if primary is None
+                    else str(primary["id"])
+                ),
+            "secondary_power_source_id":
+                (
+                    None
+                    if secondary is None
+                    else str(secondary["id"])
+                ),
+        }, flags
+
+    def _performance_evidence(
+        self,
+        athlete_id: uuid.UUID,
+        canonical: CanonicalSession,
+        training_setup: dict,
+    ) -> tuple[dict, list[str]]:
+        flags: list[str] = []
+
+        if (
+            training_setup["status"]
+            == "available"
+        ):
+            context = training_setup[
+                "environment"
+            ]
+            context_source = (
+                "training_setup"
+            )
+
+        elif canonical.indoor is True:
             context = "indoor"
+            context_source = (
+                "canonical_indoor"
+            )
+
         elif canonical.indoor is False:
             context = "outdoor"
+            context_source = (
+                "canonical_indoor"
+            )
+
         else:
             context = None
+            context_source = None
 
         if context is None:
             flags.append(
@@ -508,6 +669,7 @@ class SessionAnalyzer:
                 "status":
                     "context_unknown",
                 "context": None,
+                "context_source": None,
                 "zone_set_id": None,
                 "ftp_w": None,
                 "threshold_hr_bpm": None,
@@ -539,6 +701,7 @@ class SessionAnalyzer:
                 "status":
                     "zone_set_missing",
                 "context": context,
+                "context_source": context_source,
                 "zone_set_id": None,
                 "ftp_w": None,
                 "threshold_hr_bpm": None,
@@ -558,6 +721,7 @@ class SessionAnalyzer:
         return {
             "status": "available",
             "context": context,
+            "context_source": context_source,
             "zone_set_id": str(
                 zone_set["id"]
             ),
@@ -600,10 +764,19 @@ class SessionAnalyzer:
         athlete_id: uuid.UUID,
         canonical: CanonicalSession,
     ) -> dict:
+        (
+            training_setup,
+            training_setup_flags,
+        ) = self._training_setup_evidence(
+            athlete_id,
+            canonical,
+        )
+
         performance, performance_flags = (
             self._performance_evidence(
                 athlete_id,
                 canonical,
+                training_setup,
             )
         )
 
@@ -617,6 +790,15 @@ class SessionAnalyzer:
         ).all()
 
         actual = {
+            "training_setup_id":
+                (
+                    None
+                    if canonical.training_setup_id
+                    is None
+                    else str(
+                        canonical.training_setup_id
+                    )
+                ),
             "duration_s":
                 canonical.duration_s,
             "distance_m":
@@ -640,12 +822,15 @@ class SessionAnalyzer:
                     "unplanned",
                 "flags": [
                     "no_planned_session_match",
+                    *training_setup_flags,
                     *performance_flags,
                 ],
                 "evidence": {
                     "actual": actual,
                     "performance":
                         performance,
+                    "training_setup":
+                        training_setup,
                     "match_count": 0,
                 },
             }
@@ -657,12 +842,15 @@ class SessionAnalyzer:
                     "match_conflict",
                 "flags": [
                     "multiple_plan_matches",
+                    *training_setup_flags,
                     *performance_flags,
                 ],
                 "evidence": {
                     "actual": actual,
                     "performance":
                         performance,
+                    "training_setup":
+                        training_setup,
                     "match_count":
                         len(matches),
                 },
@@ -685,12 +873,15 @@ class SessionAnalyzer:
                     "match_conflict",
                 "flags": [
                     "invalid_plan_match",
+                    *training_setup_flags,
                     *performance_flags,
                 ],
                 "evidence": {
                     "actual": actual,
                     "performance":
                         performance,
+                    "training_setup":
+                        training_setup,
                 },
             }
 
@@ -707,9 +898,33 @@ class SessionAnalyzer:
         )
 
         flags = [
+            *training_setup_flags,
             *performance_flags,
             *stimulus_flags,
         ]
+
+        setup_assessment = (
+            _setup_assessment(
+                plan.training_setup_id,
+                canonical.training_setup_id,
+            )
+        )
+
+        if (
+            setup_assessment["status"]
+            == "actual_missing"
+        ):
+            flags.append(
+                "training_setup_actual_missing"
+            )
+
+        elif (
+            setup_assessment["status"]
+            == "changed"
+        ):
+            flags.append(
+                "training_setup_changed"
+            )
 
         duration_comparison = (
             duration["comparison"]
@@ -740,6 +955,10 @@ class SessionAnalyzer:
                     actual,
                 "performance":
                     performance,
+                "training_setup":
+                    training_setup,
+                "setup_assessment":
+                    setup_assessment,
                 "duration_assessment":
                     duration,
                 "stimulus_assessment":
@@ -747,6 +966,15 @@ class SessionAnalyzer:
                 "planned": {
                     "duration_s":
                         plan.planned_duration_s,
+                    "training_setup_id":
+                        (
+                            None
+                            if plan.training_setup_id
+                            is None
+                            else str(
+                                plan.training_setup_id
+                            )
+                        ),
                     "session_type":
                         plan.session_type,
                     "priority":

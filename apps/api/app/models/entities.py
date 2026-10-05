@@ -447,9 +447,8 @@ class SportProfile(Base):
     __table_args__ = (
         UniqueConstraint(
             "athlete_id",
-            "sport",
-            "context",
-            name="uq_sport_profile_athlete_sport_context",
+            "profile_key",
+            name="uq_sport_profile_athlete_key",
         ),
     )
 
@@ -458,15 +457,43 @@ class SportProfile(Base):
         default=uuid.uuid4,
     )
     athlete_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("athletes.id", ondelete="CASCADE"),
+        ForeignKey(
+            "athletes.id",
+            ondelete="CASCADE",
+        ),
         index=True,
     )
     sport: Mapped[str] = mapped_column(
         String(64),
     )
+
+    # Kept for backward compatibility.
+    # New code uses environment.
     context: Mapped[str] = mapped_column(
         String(32),
     )
+
+    discipline: Mapped[str | None] = mapped_column(
+        String(32),
+        nullable=True,
+    )
+    environment: Mapped[str] = mapped_column(
+        String(32),
+    )
+    power_source_id: Mapped[
+        uuid.UUID | None
+    ] = mapped_column(
+        ForeignKey(
+            "devices.id",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
+        index=True,
+    )
+    profile_key: Mapped[str] = mapped_column(
+        String(255),
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utcnow,

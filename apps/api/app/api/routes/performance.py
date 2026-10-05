@@ -22,6 +22,12 @@ router = APIRouter(
 )
 
 
+PerformanceEnvironment = Literal[
+    "indoor",
+    "outdoor",
+]
+
+
 def _handle_error(exc: Exception):
     if isinstance(exc, LookupError):
         raise HTTPException(
@@ -59,10 +65,12 @@ def create_zone_set(
 def list_zone_sets(
     athlete_id: uuid.UUID,
     sport: str = "cycling",
-    context: Literal[
-        "indoor",
-        "outdoor",
-    ] = "outdoor",
+    context: PerformanceEnvironment | None = None,
+    environment:
+        PerformanceEnvironment | None = None,
+    discipline: str | None = None,
+    power_source_id:
+        uuid.UUID | None = None,
     db: Session = Depends(get_db),
 ):
     try:
@@ -74,10 +82,17 @@ def list_zone_sets(
                     athlete_id=athlete_id,
                     sport=sport,
                     context=context,
+                    environment=environment,
+                    discipline=discipline,
+                    power_source_id=
+                        power_source_id,
                 )
         }
 
-    except ValueError as exc:
+    except (
+        LookupError,
+        ValueError,
+    ) as exc:
         _handle_error(exc)
 
 
@@ -86,10 +101,12 @@ def get_effective_zone_set(
     athlete_id: uuid.UUID,
     at: datetime,
     sport: str = "cycling",
-    context: Literal[
-        "indoor",
-        "outdoor",
-    ] = "outdoor",
+    context: PerformanceEnvironment | None = None,
+    environment:
+        PerformanceEnvironment | None = None,
+    discipline: str | None = None,
+    power_source_id:
+        uuid.UUID | None = None,
     db: Session = Depends(get_db),
 ):
     try:
@@ -99,10 +116,17 @@ def get_effective_zone_set(
             athlete_id=athlete_id,
             sport=sport,
             context=context,
+            environment=environment,
+            discipline=discipline,
+            power_source_id=
+                power_source_id,
             at=at,
         )
 
-    except ValueError as exc:
+    except (
+        LookupError,
+        ValueError,
+    ) as exc:
         _handle_error(exc)
 
     if item is None:
@@ -110,7 +134,7 @@ def get_effective_zone_set(
             status_code=404,
             detail=(
                 "No effective zone set "
-                "for this date"
+                "for this date and profile"
             ),
         )
 

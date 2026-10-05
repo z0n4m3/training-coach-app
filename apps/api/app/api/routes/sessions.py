@@ -8,8 +8,14 @@ from app.db.session import get_db
 from app.schemas.session_context import (
     SessionTrainingSetupUpdate,
 )
+from app.schemas.session_feedback import (
+    SessionFeedbackUpdate,
+)
 from app.services.session_context_service import (
     SessionContextService,
+)
+from app.services.session_feedback_service import (
+    SessionFeedbackService,
 )
 from app.services.session_query_service import SessionQueryService
 
@@ -60,6 +66,37 @@ def set_training_setup(
             session_id=session_id,
             training_setup_id=
                 payload.training_setup_id,
+        )
+
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc),
+        ) from exc
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+
+@router.patch(
+    "/{session_id}/feedback"
+)
+def update_session_feedback(
+    session_id: uuid.UUID,
+    athlete_id: uuid.UUID,
+    payload: SessionFeedbackUpdate,
+    db: Session = Depends(get_db),
+):
+    try:
+        return SessionFeedbackService(
+            db
+        ).update(
+            athlete_id=athlete_id,
+            session_id=session_id,
+            payload=payload,
         )
 
     except LookupError as exc:

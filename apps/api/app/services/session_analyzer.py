@@ -20,7 +20,7 @@ from app.services.training_setup_service import (
 )
 
 
-ANALYSIS_VERSION = "deterministic-v4"
+ANALYSIS_VERSION = "deterministic-v5"
 
 WITHIN_TOLERANCE = 0.10
 MAJOR_DEVIATION = 0.25
@@ -625,6 +625,197 @@ class SessionAnalyzer:
                 ),
         }, flags
 
+    def _effective_metric_profile(
+        self,
+        *,
+        athlete_id: uuid.UUID,
+        sport: str,
+        environment: str,
+        discipline: str | None,
+        power_source_id:
+            uuid.UUID | None,
+        at,
+        metric: str,
+    ) -> tuple[dict | None, str]:
+        service = PerformanceProfileService(
+            self.db
+        )
+
+        candidates: list[
+            tuple[
+                str,
+                str | None,
+                uuid.UUID | None,
+            ]
+        ] = []
+
+        if metric == "power":
+            if power_source_id is not None:
+                if discipline is not None:
+                    candidates.append(
+                        (
+                            "source_discipline",
+                            discipline,
+                            power_source_id,
+                        )
+                    )
+
+                candidates.append(
+                    (
+                        "source_generic",
+                        None,
+                        power_source_id,
+                    )
+                )
+
+            else:
+                if discipline is not None:
+                    candidates.append(
+                        (
+                            "discipline_generic",
+                            discipline,
+                            None,
+                        )
+                    )
+
+                candidates.append(
+                    (
+                        "environment_generic",
+                        None,
+                        None,
+                    )
+                )
+
+            required_field = "ftp_w"
+
+        elif metric == "hr":
+            if discipline is not None:
+                candidates.append(
+                    (
+                        "discipline_generic",
+                        discipline,
+                        None,
+                    )
+                )
+
+            candidates.append(
+                (
+                    "environment_generic",
+                    None,
+                    None,
+                )
+            )
+
+            required_field = (
+                "threshold_hr_bpm"
+            )
+
+        else:
+            raise ValueError(
+                "Unsupported performance metric"
+            )
+
+        seen: set[
+            tuple[
+                str | None,
+                uuid.UUID | None,
+            ]
+        ] = set()
+
+        for (
+            resolution,
+            candidate_discipline,
+            candidate_source,
+        ) in candidates:
+            key = (
+                candidate_discipline,
+                candidate_source,
+            )
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+
+            zone_set = (
+                service.effective_zone_set(
+                    athlete_id=athlete_id,
+                    sport=sport,
+                    environment=environment,
+                    discipline=
+                        candidate_discipline,
+                    power_source_id=
+                        candidate_source,
+                    at=at,
+                )
+            )
+
+            if (
+                zone_set is not None
+                and zone_set.get(
+                    required_field
+                ) is not None
+            ):
+                return (
+                    zone_set,
+                    resolution,
+                )
+
+        return None, "missing"
+
+    @staticmethod
+    def _metric_profile_evidence(
+        zone_set: dict | None,
+        resolution: str,
+    ) -> dict:
+        if zone_set is None:
+            return {
+                "status": "missing",
+                "resolution":
+                    resolution,
+                "zone_set_id": None,
+                "sport_profile_id":
+                    None,
+                "effective_from": None,
+                "discipline": None,
+                "power_source_id":
+                    None,
+            }
+
+        return {
+            "status": "available",
+            "resolution":
+                resolution,
+            "zone_set_id":
+                str(zone_set["id"]),
+            "sport_profile_id":
+                str(
+                    zone_set[
+                        "sport_profile_id"
+                    ]
+                ),
+            "effective_from":
+                zone_set[
+                    "effective_from"
+                ].isoformat(),
+            "discipline":
+                zone_set[
+                    "discipline"
+                ],
+            "power_source_id":
+                (
+                    None
+                    if zone_set[
+                        "power_source_id"
+                    ] is None
+                    else str(
+                        zone_set[
+                            "power_source_id"
+                        ]
+                    )
+                ),
+        }
+
     def _performance_evidence(
         self,
         athlete_id: uuid.UUID,
@@ -633,6 +824,9 @@ class SessionAnalyzer:
     ) -> tuple[dict, list[str]]:
         flags: list[str] = []
 
+        discipline = None
+        power_source_id = None
+
         if (
             training_setup["status"]
             == "available"
@@ -640,9 +834,25 @@ class SessionAnalyzer:
             context = training_setup[
                 "environment"
             ]
+
             context_source = (
                 "training_setup"
             )
+
+            discipline = training_setup[
+                "discipline"
+            ]
+
+            raw_power_source = (
+                training_setup[
+                    "primary_power_source_id"
+                ]
+            )
+
+            if raw_power_source is not None:
+                power_source_id = uuid.UUID(
+                    raw_power_source
+                )
 
         elif canonical.indoor is True:
             context = "indoor"
@@ -660,6 +870,23 @@ class SessionAnalyzer:
             context = None
             context_source = None
 
+        base = {
+            "context": context,
+            "environment": context,
+            "context_source":
+                context_source,
+            "discipline":
+                discipline,
+            "power_source_id":
+                (
+                    None
+                    if power_source_id is None
+                    else str(
+                        power_source_id
+                    )
+                ),
+        }
+
         if context is None:
             flags.append(
                 "performance_context_unknown"
@@ -668,9 +895,19 @@ class SessionAnalyzer:
             return {
                 "status":
                     "context_unknown",
-                "context": None,
-                "context_source": None,
+                **base,
                 "zone_set_id": None,
+                "effective_from": None,
+                "power_profile":
+                    self._metric_profile_evidence(
+                        None,
+                        "missing",
+                    ),
+                "hr_profile":
+                    self._metric_profile_evidence(
+                        None,
+                        "missing",
+                    ),
                 "ftp_w": None,
                 "threshold_hr_bpm": None,
                 "avg_power_pct_ftp": None,
@@ -681,54 +918,186 @@ class SessionAnalyzer:
                 "max_hr_pct_threshold": None,
             }, flags
 
-        zone_set = (
-            PerformanceProfileService(
-                self.db
-            ).effective_zone_set(
+        power_zone_set, power_resolution = (
+            self._effective_metric_profile(
                 athlete_id=athlete_id,
                 sport=canonical.sport,
-                context=context,
+                environment=context,
+                discipline=discipline,
+                power_source_id=
+                    power_source_id,
                 at=canonical.start_at,
+                metric="power",
             )
         )
 
-        if zone_set is None:
+        hr_zone_set, hr_resolution = (
+            self._effective_metric_profile(
+                athlete_id=athlete_id,
+                sport=canonical.sport,
+                environment=context,
+                discipline=discipline,
+                power_source_id=None,
+                at=canonical.start_at,
+                metric="hr",
+            )
+        )
+
+        has_power_data = any(
+            value is not None
+            for value in (
+                canonical.avg_power_w,
+                canonical.normalized_power_w,
+            )
+        )
+
+        has_hr_data = any(
+            value is not None
+            for value in (
+                canonical.avg_hr_bpm,
+                canonical.max_hr_bpm,
+            )
+        )
+
+        if (
+            has_power_data
+            and power_zone_set is None
+        ):
+            flags.append(
+                "no_effective_power_profile"
+            )
+
+        if (
+            has_hr_data
+            and hr_zone_set is None
+        ):
+            flags.append(
+                "no_effective_hr_profile"
+            )
+
+        if (
+            power_zone_set is None
+            and hr_zone_set is None
+        ):
             flags.append(
                 "no_effective_zone_set"
             )
 
-            return {
-                "status":
-                    "zone_set_missing",
-                "context": context,
-                "context_source": context_source,
-                "zone_set_id": None,
-                "ftp_w": None,
-                "threshold_hr_bpm": None,
-                "avg_power_pct_ftp": None,
-                "normalized_power_pct_ftp":
-                    None,
-                "intensity_factor": None,
-                "avg_hr_pct_threshold": None,
-                "max_hr_pct_threshold": None,
-            }, flags
+        power_missing = (
+            has_power_data
+            and power_zone_set is None
+        )
 
-        ftp_w = zone_set["ftp_w"]
-        threshold_hr = zone_set[
-            "threshold_hr_bpm"
-        ]
+        hr_missing = (
+            has_hr_data
+            and hr_zone_set is None
+        )
+
+        if (
+            power_zone_set is None
+            and hr_zone_set is None
+        ):
+            status = "zone_set_missing"
+
+        elif (
+            power_missing
+            or hr_missing
+        ):
+            status = "partial"
+
+        else:
+            status = "available"
+
+        ftp_w = (
+            None
+            if power_zone_set is None
+            else power_zone_set["ftp_w"]
+        )
+
+        threshold_hr = (
+            None
+            if hr_zone_set is None
+            else hr_zone_set[
+                "threshold_hr_bpm"
+            ]
+        )
+
+        power_profile = (
+            self._metric_profile_evidence(
+                power_zone_set,
+                power_resolution,
+            )
+        )
+
+        hr_profile = (
+            self._metric_profile_evidence(
+                hr_zone_set,
+                hr_resolution,
+            )
+        )
+
+        power_zone_id = (
+            None
+            if power_zone_set is None
+            else power_zone_set["id"]
+        )
+
+        hr_zone_id = (
+            None
+            if hr_zone_set is None
+            else hr_zone_set["id"]
+        )
+
+        # Legacy field is only safe when
+        # both metrics come from one zone set,
+        # or only one profile exists.
+        if (
+            power_zone_id is not None
+            and hr_zone_id is not None
+            and power_zone_id != hr_zone_id
+        ):
+            legacy_zone_set_id = None
+
+        else:
+            legacy_id = (
+                power_zone_id
+                if power_zone_id is not None
+                else hr_zone_id
+            )
+
+            legacy_zone_set_id = (
+                None
+                if legacy_id is None
+                else str(legacy_id)
+            )
+
+        legacy_effective_from = None
+
+        if power_zone_set is not None:
+            legacy_effective_from = (
+                power_zone_set[
+                    "effective_from"
+                ].isoformat()
+            )
+
+        elif hr_zone_set is not None:
+            legacy_effective_from = (
+                hr_zone_set[
+                    "effective_from"
+                ].isoformat()
+            )
 
         return {
-            "status": "available",
-            "context": context,
-            "context_source": context_source,
-            "zone_set_id": str(
-                zone_set["id"]
-            ),
+            "status": status,
+            **base,
+            "zone_set_id":
+                legacy_zone_set_id,
             "effective_from":
-                zone_set[
-                    "effective_from"
-                ].isoformat(),
+                legacy_effective_from,
+            "power_profile":
+                power_profile,
+            "hr_profile":
+                hr_profile,
             "ftp_w": ftp_w,
             "threshold_hr_bpm":
                 threshold_hr,

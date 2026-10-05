@@ -538,7 +538,7 @@ def test_indoor_session_uses_historical_indoor_ftp():
 
     assert (
         analysis.analysis_version
-        == "deterministic-v4"
+        == "deterministic-v5"
     )
 
     assert (

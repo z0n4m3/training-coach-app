@@ -9,10 +9,13 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.schemas.performance_proposals import (
+    FtpProposalApproval,
     FtpProposalCreate,
+    PerformanceProposalDecision,
 )
 from app.services.performance_proposal_service import (
     PerformanceProposalService,
+    ProposalConflictError,
 )
 
 
@@ -25,6 +28,15 @@ router = APIRouter(
 def _handle_error(
     exc: Exception,
 ):
+    if isinstance(
+        exc,
+        ProposalConflictError,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+
     if isinstance(
         exc,
         LookupError,
@@ -79,6 +91,53 @@ def list_performance_proposals(
                     status=status,
                 )
         }
+
+    except (
+        LookupError,
+        ValueError,
+    ) as exc:
+        _handle_error(exc)
+
+
+@router.post(
+    "/{proposal_id}/approve",
+)
+def approve_ftp_proposal(
+    proposal_id: uuid.UUID,
+    payload: FtpProposalApproval,
+    db: Session = Depends(get_db),
+):
+    try:
+        return PerformanceProposalService(
+            db
+        ).approve_ftp_proposal(
+            proposal_id=proposal_id,
+            payload=payload,
+        )
+
+    except (
+        LookupError,
+        ValueError,
+    ) as exc:
+        _handle_error(exc)
+
+
+@router.post(
+    "/{proposal_id}/reject",
+)
+def reject_performance_proposal(
+    proposal_id: uuid.UUID,
+    payload:
+        PerformanceProposalDecision,
+    db: Session = Depends(get_db),
+):
+    try:
+        return PerformanceProposalService(
+            db
+        ).reject_proposal(
+            proposal_id=proposal_id,
+            payload=payload,
+        )
 
     except (
         LookupError,

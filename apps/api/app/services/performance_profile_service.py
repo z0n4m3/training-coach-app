@@ -32,6 +32,8 @@ class PerformanceProfileService:
     def create_zone_set(
         self,
         payload: ZoneSetCreate,
+        *,
+        commit: bool = True,
     ) -> dict:
         athlete = self.db.get(
             Athlete,
@@ -142,8 +144,13 @@ class PerformanceProfileService:
         )
 
         self.db.add(zone_set)
-        self.db.commit()
-        self.db.refresh(zone_set)
+
+        if commit:
+            self.db.commit()
+            self.db.refresh(zone_set)
+
+        else:
+            self.db.flush()
 
         return self._serialize(
             profile,

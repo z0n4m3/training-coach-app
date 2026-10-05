@@ -318,3 +318,263 @@ def test_no_future_zone_set_is_used_for_old_session():
     )
 
     assert result is None
+
+
+def make_power_sources(
+    db: Session,
+    athlete: Athlete,
+):
+    from app.schemas.cycling_equipment import (
+        DeviceCreate,
+    )
+    from app.services.cycling_equipment_service import (
+        CyclingEquipmentService,
+    )
+
+    equipment = CyclingEquipmentService(
+        db
+    )
+
+    trainer = equipment.create_device(
+        DeviceCreate(
+            athlete_id=athlete.id,
+            name="Trainer power",
+            category="trainer",
+            mobility="shared",
+            capabilities={
+                "power_measurement": True,
+            },
+        )
+    )
+
+    power_meter = equipment.create_device(
+        DeviceCreate(
+            athlete_id=athlete.id,
+            name="Bike power meter",
+            category="power_meter",
+            mobility="movable",
+            capabilities={
+                "power_measurement": True,
+            },
+        )
+    )
+
+    return trainer, power_meter
+
+
+def test_same_environment_can_have_separate_power_sources():
+    db = make_db()
+    athlete = make_athlete(db)
+
+    trainer, power_meter = (
+        make_power_sources(
+            db,
+            athlete,
+        )
+    )
+
+    service = PerformanceProfileService(
+        db
+    )
+
+    effective = datetime(
+        2026,
+        9,
+        18,
+        tzinfo=timezone.utc,
+    )
+
+    trainer_zone = (
+        service.create_zone_set(
+            ZoneSetCreate(
+                athlete_id=athlete.id,
+                sport="cycling",
+                environment="indoor",
+                discipline="road",
+                power_source_id=
+                    trainer["id"],
+                effective_from=effective,
+                ftp_w=230,
+                source="test",
+            )
+        )
+    )
+
+    meter_zone = (
+        service.create_zone_set(
+            ZoneSetCreate(
+                athlete_id=athlete.id,
+                sport="cycling",
+                environment="indoor",
+                discipline="road",
+                power_source_id=
+                    power_meter["id"],
+                effective_from=effective,
+                ftp_w=253,
+                source="test",
+            )
+        )
+    )
+
+    assert trainer_zone["ftp_w"] == 230
+    assert meter_zone["ftp_w"] == 253
+
+    assert (
+        trainer_zone["power_source_id"]
+        == trainer["id"]
+    )
+    assert (
+        meter_zone["power_source_id"]
+        == power_meter["id"]
+    )
+
+    assert (
+        trainer_zone["profile_key"]
+        != meter_zone["profile_key"]
+    )
+
+
+def test_effective_profile_is_resolved_by_power_source():
+    db = make_db()
+    athlete = make_athlete(db)
+
+    trainer, power_meter = (
+        make_power_sources(
+            db,
+            athlete,
+        )
+    )
+
+    service = PerformanceProfileService(
+        db
+    )
+
+    effective = datetime(
+        2026,
+        9,
+        18,
+        tzinfo=timezone.utc,
+    )
+
+    for source_id, ftp in (
+        (trainer["id"], 230),
+        (power_meter["id"], 253),
+    ):
+        service.create_zone_set(
+            ZoneSetCreate(
+                athlete_id=athlete.id,
+                environment="indoor",
+                discipline="road",
+                power_source_id=source_id,
+                effective_from=effective,
+                ftp_w=ftp,
+                source="test",
+            )
+        )
+
+    trainer_result = (
+        service.effective_zone_set(
+            athlete_id=athlete.id,
+            sport="cycling",
+            environment="indoor",
+            discipline="road",
+            power_source_id=
+                trainer["id"],
+            at=datetime(
+                2026,
+                10,
+                1,
+                tzinfo=timezone.utc,
+            ),
+        )
+    )
+
+    meter_result = (
+        service.effective_zone_set(
+            athlete_id=athlete.id,
+            sport="cycling",
+            environment="indoor",
+            discipline="road",
+            power_source_id=
+                power_meter["id"],
+            at=datetime(
+                2026,
+                10,
+                1,
+                tzinfo=timezone.utc,
+            ),
+        )
+    )
+
+    assert trainer_result is not None
+    assert meter_result is not None
+
+    assert trainer_result["ftp_w"] == 230
+    assert meter_result["ftp_w"] == 253
+
+
+def test_source_specific_profile_cannot_bind_hr():
+    db = make_db()
+    athlete = make_athlete(db)
+
+    trainer, _ = make_power_sources(
+        db,
+        athlete,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="HR metrics",
+    ):
+        ZoneSetCreate(
+            athlete_id=athlete.id,
+            environment="indoor",
+            discipline="road",
+            power_source_id=
+                trainer["id"],
+            effective_from=datetime(
+                2026,
+                9,
+                18,
+                tzinfo=timezone.utc,
+            ),
+            ftp_w=230,
+            threshold_hr_bpm=178,
+            source="test",
+        )
+
+
+def test_trainer_power_profile_cannot_be_outdoor():
+    db = make_db()
+    athlete = make_athlete(db)
+
+    trainer, _ = make_power_sources(
+        db,
+        athlete,
+    )
+
+    service = PerformanceProfileService(
+        db
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="indoor environment",
+    ):
+        service.create_zone_set(
+            ZoneSetCreate(
+                athlete_id=athlete.id,
+                environment="outdoor",
+                discipline="road",
+                power_source_id=
+                    trainer["id"],
+                effective_from=datetime(
+                    2026,
+                    9,
+                    18,
+                    tzinfo=timezone.utc,
+                ),
+                ftp_w=230,
+                source="test",
+            )
+        )

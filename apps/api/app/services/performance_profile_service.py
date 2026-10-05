@@ -6,23 +6,27 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.domain.cycling_equipment import (
+    normalize_cycling_discipline,
+    normalize_training_environment,
+)
 from app.domain.sport import normalize_sport
 from app.models.entities import (
     Athlete,
+    Device,
     SportProfile,
     ZoneSet,
 )
-from app.schemas.performance import ZoneSetCreate
-
-
-VALID_CONTEXTS = {
-    "indoor",
-    "outdoor",
-}
+from app.schemas.performance import (
+    ZoneSetCreate,
+)
 
 
 class PerformanceProfileService:
-    def __init__(self, db: Session):
+    def __init__(
+        self,
+        db: Session,
+    ):
         self.db = db
 
     def create_zone_set(
@@ -48,29 +52,59 @@ class PerformanceProfileService:
                 "Sport cannot be empty"
             )
 
-        context = payload.context.lower()
-
-        if context not in VALID_CONTEXTS:
-            raise ValueError(
-                "Unsupported performance context"
+        environment = (
+            self._resolve_environment(
+                context=payload.context,
+                environment=
+                    payload.environment,
             )
+        )
+
+        discipline = (
+            self._normalize_discipline(
+                sport=sport,
+                discipline=
+                    payload.discipline,
+            )
+        )
+
+        if payload.power_source_id is not None:
+            self._validate_power_source(
+                athlete_id=
+                    payload.athlete_id,
+                power_source_id=
+                    payload.power_source_id,
+                environment=environment,
+            )
+
+        profile_key = self._profile_key(
+            sport=sport,
+            environment=environment,
+            discipline=discipline,
+            power_source_id=
+                payload.power_source_id,
+        )
 
         profile = self.db.scalar(
             select(SportProfile).where(
                 SportProfile.athlete_id
                 == payload.athlete_id,
-                SportProfile.sport
-                == sport,
-                SportProfile.context
-                == context,
+                SportProfile.profile_key
+                == profile_key,
             )
         )
 
         if profile is None:
             profile = SportProfile(
-                athlete_id=payload.athlete_id,
+                athlete_id=
+                    payload.athlete_id,
                 sport=sport,
-                context=context,
+                context=environment,
+                environment=environment,
+                discipline=discipline,
+                power_source_id=
+                    payload.power_source_id,
+                profile_key=profile_key,
             )
 
             self.db.add(profile)
@@ -120,12 +154,20 @@ class PerformanceProfileService:
         self,
         athlete_id: uuid.UUID,
         sport: str,
-        context: str,
+        context: str | None = None,
+        environment: str | None = None,
+        discipline: str | None = None,
+        power_source_id:
+            uuid.UUID | None = None,
     ) -> list[dict]:
         profile = self._profile(
             athlete_id=athlete_id,
             sport=sport,
             context=context,
+            environment=environment,
+            discipline=discipline,
+            power_source_id=
+                power_source_id,
         )
 
         if profile is None:
@@ -154,13 +196,26 @@ class PerformanceProfileService:
         self,
         athlete_id: uuid.UUID,
         sport: str,
-        context: str,
-        at: datetime,
+        context: str | None = None,
+        at: datetime | None = None,
+        environment: str | None = None,
+        discipline: str | None = None,
+        power_source_id:
+            uuid.UUID | None = None,
     ) -> dict | None:
+        if at is None:
+            raise ValueError(
+                "Effective date is required"
+            )
+
         profile = self._profile(
             athlete_id=athlete_id,
             sport=sport,
             context=context,
+            environment=environment,
+            discipline=discipline,
+            power_source_id=
+                power_source_id,
         )
 
         if profile is None:
@@ -190,30 +245,216 @@ class PerformanceProfileService:
 
     def _profile(
         self,
+        *,
         athlete_id: uuid.UUID,
         sport: str,
-        context: str,
+        context: str | None,
+        environment: str | None,
+        discipline: str | None,
+        power_source_id:
+            uuid.UUID | None,
     ) -> SportProfile | None:
-        context = context.lower()
+        normalized_sport = (
+            normalize_sport(sport)
+        )
 
-        if context not in VALID_CONTEXTS:
-            raise ValueError(
-                "Unsupported performance context"
+        resolved_environment = (
+            self._resolve_environment(
+                context=context,
+                environment=environment,
+                default="outdoor",
             )
+        )
 
-        normalized_sport = normalize_sport(
-            sport
+        normalized_discipline = (
+            self._normalize_discipline(
+                sport=normalized_sport,
+                discipline=discipline,
+            )
+        )
+
+        profile_key = self._profile_key(
+            sport=normalized_sport,
+            environment=
+                resolved_environment,
+            discipline=
+                normalized_discipline,
+            power_source_id=
+                power_source_id,
         )
 
         return self.db.scalar(
             select(SportProfile).where(
                 SportProfile.athlete_id
                 == athlete_id,
-                SportProfile.sport
-                == normalized_sport,
-                SportProfile.context
-                == context,
+                SportProfile.profile_key
+                == profile_key,
             )
+        )
+
+    @staticmethod
+    def _resolve_environment(
+        *,
+        context: str | None,
+        environment: str | None,
+        default: str | None = None,
+    ) -> str:
+        if (
+            context is not None
+            and environment is not None
+        ):
+            context_value = (
+                normalize_training_environment(
+                    context
+                )
+            )
+            environment_value = (
+                normalize_training_environment(
+                    environment
+                )
+            )
+
+            if (
+                context_value
+                != environment_value
+            ):
+                raise ValueError(
+                    (
+                        "environment and legacy "
+                        "context must match"
+                    )
+                )
+
+            return environment_value
+
+        value = (
+            environment
+            if environment is not None
+            else context
+        )
+
+        if value is None:
+            if default is None:
+                raise ValueError(
+                    (
+                        "Performance environment "
+                        "is required"
+                    )
+                )
+
+            value = default
+
+        return normalize_training_environment(
+            value
+        )
+
+    @staticmethod
+    def _normalize_discipline(
+        *,
+        sport: str,
+        discipline: str | None,
+    ) -> str | None:
+        if discipline is None:
+            return None
+
+        if sport != "cycling":
+            raise ValueError(
+                (
+                    "Discipline-specific performance "
+                    "profiles currently support "
+                    "cycling only"
+                )
+            )
+
+        return normalize_cycling_discipline(
+            discipline
+        )
+
+    def _validate_power_source(
+        self,
+        *,
+        athlete_id: uuid.UUID,
+        power_source_id: uuid.UUID,
+        environment: str,
+    ) -> None:
+        device = self.db.get(
+            Device,
+            power_source_id,
+        )
+
+        if (
+            device is None
+            or device.athlete_id
+            != athlete_id
+        ):
+            raise LookupError(
+                "Power source not found"
+            )
+
+        if not device.active:
+            raise ValueError(
+                "Power source is inactive"
+            )
+
+        if device.category not in {
+            "power_meter",
+            "trainer",
+        }:
+            raise ValueError(
+                (
+                    "Device cannot be used as "
+                    "a power source"
+                )
+            )
+
+        if device.category == "trainer":
+            if environment != "indoor":
+                raise ValueError(
+                    (
+                        "Trainer power profile "
+                        "requires indoor environment"
+                    )
+                )
+
+            if not bool(
+                device.capabilities.get(
+                    "power_measurement"
+                )
+            ):
+                raise ValueError(
+                    (
+                        "Trainer cannot have a "
+                        "power profile without "
+                        "power_measurement capability"
+                    )
+                )
+
+    @staticmethod
+    def _profile_key(
+        *,
+        sport: str,
+        environment: str,
+        discipline: str | None,
+        power_source_id:
+            uuid.UUID | None,
+    ) -> str:
+        discipline_key = (
+            discipline
+            if discipline is not None
+            else "*"
+        )
+
+        power_key = (
+            str(power_source_id)
+            if power_source_id is not None
+            else "*"
+        )
+
+        return (
+            f"{sport}|"
+            f"{discipline_key}|"
+            f"{environment}|"
+            f"{power_key}"
         )
 
     @staticmethod
@@ -229,8 +470,19 @@ class PerformanceProfileService:
                 zone_set.athlete_id,
             "sport":
                 profile.sport,
+
+            # Legacy field retained.
             "context":
-                profile.context,
+                profile.environment,
+
+            "environment":
+                profile.environment,
+            "discipline":
+                profile.discipline,
+            "power_source_id":
+                profile.power_source_id,
+            "profile_key":
+                profile.profile_key,
             "effective_from":
                 zone_set.effective_from,
             "ftp_w":

@@ -13,6 +13,9 @@ from app.models.entities import (
     SessionMetricSource,
     SourceActivity,
 )
+from app.services.session_feedback_service import (
+    SessionFeedbackService,
+)
 from app.services.training_setup_service import (
     TrainingSetupService,
 )
@@ -94,6 +97,15 @@ class SessionQueryService:
         )
 
         result = self._summary(session)
+
+        result["feedback"] = (
+            SessionFeedbackService(
+                self.db
+            ).get(
+                athlete_id=athlete_id,
+                session_id=session.id,
+            )
+        )
 
         result["training_setup"] = (
             None

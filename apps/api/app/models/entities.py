@@ -1160,3 +1160,80 @@ class PerformanceChangeProposal(Base):
         default=utcnow,
         onupdate=utcnow,
     )
+
+
+class SessionFeedback(Base):
+    __tablename__ = "session_feedback"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "canonical_session_id",
+            name="uq_session_feedback_canonical",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    athlete_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(
+            "athletes.id",
+            ondelete="CASCADE",
+        ),
+        index=True,
+    )
+
+    canonical_session_id: Mapped[
+        uuid.UUID
+    ] = mapped_column(
+        ForeignKey(
+            "canonical_sessions.id",
+            ondelete="CASCADE",
+        ),
+        index=True,
+    )
+
+    # Session RPE / CR10 style scale.
+    rpe: Mapped[
+        float | None
+    ] = mapped_column(
+        Float,
+        nullable=True,
+    )
+
+    # 0 = fresh legs, 5 = very high muscular fatigue.
+    leg_fatigue: Mapped[
+        float | None
+    ] = mapped_column(
+        Float,
+        nullable=True,
+    )
+
+    comment: Mapped[
+        str | None
+    ] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    # Optional athlete-specific signals.
+    # Not part of the default feedback UI.
+    custom_metrics: Mapped[
+        dict[str, Any]
+    ] = mapped_column(
+        JSON,
+        default=dict,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )

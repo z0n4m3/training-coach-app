@@ -85,6 +85,14 @@ class CanonicalSession(Base):
     athlete_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("athletes.id", ondelete="CASCADE"), index=True)
     sport: Mapped[str] = mapped_column(String(64))
     indoor: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    training_setup_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(
+            "training_setups.id",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+        index=True,
+    )
     start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     duration_s: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -291,6 +299,14 @@ class PlannedSession(Base):
     )
     name: Mapped[str] = mapped_column(String(200))
     sport: Mapped[str] = mapped_column(String(64), default="cycling")
+    training_setup_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(
+            "training_setups.id",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+        index=True,
+    )
     session_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     priority: Mapped[str] = mapped_column(String(16), default="SUPPORT")
     status: Mapped[str] = mapped_column(String(32), default="planned")

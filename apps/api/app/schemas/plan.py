@@ -60,6 +60,7 @@ class PlannedSessionCreate(BaseModel):
     planned_start_at: datetime
     name: str = Field(min_length=1, max_length=200)
     sport: str = Field(default="cycling", min_length=1, max_length=64)
+    training_setup_id: uuid.UUID | None = None
     session_type: str | None = Field(default=None, max_length=64)
 
     priority: Literal["KEY", "SUPPORT", "EASY"] = "SUPPORT"

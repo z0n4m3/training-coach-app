@@ -32,7 +32,7 @@ from app.models.entities import (
 
 
 WEEKLY_REVIEW_VERSION = (
-    "deterministic-weekly-v1"
+    "deterministic-weekly-v2"
 )
 
 
@@ -117,6 +117,535 @@ def _counter_dict(
     return {
         key: counter[key]
         for key in sorted(counter)
+    }
+
+
+def _build_coach_kpis(
+    *,
+    summary: dict,
+) -> dict:
+    """
+    Stable deterministic feature vector
+    for the future Coach Decision Engine.
+
+    This layer describes evidence.
+    It deliberately does NOT choose
+    PROGRESS / HOLD / RECOVER etc.
+    """
+
+    execution = summary[
+        "plan_execution"
+    ]
+
+    priority = execution[
+        "by_priority"
+    ]
+
+    actual = summary[
+        "actual_load_window"
+    ]
+
+    analysis = summary[
+        "analysis"
+    ]
+
+    feedback = summary[
+        "feedback"
+    ]
+
+    schedule = summary[
+        "schedule"
+    ]
+
+    actual_sessions = summary[
+        "actual_sessions"
+    ]
+
+    def priority_kpis(
+        name: str,
+    ) -> dict:
+        item = priority.get(
+            name,
+            {},
+        )
+
+        planned = int(
+            item.get(
+                "planned",
+                0,
+            )
+            or 0
+        )
+
+        matched = int(
+            item.get(
+                "matched",
+                0,
+            )
+            or 0
+        )
+
+        return {
+            "planned_session_count":
+                planned,
+            "matched_session_count":
+                matched,
+            "session_completion_ratio":
+                _ratio(
+                    matched,
+                    planned,
+                ),
+            "planned_volume_completion_ratio":
+                item.get(
+                    "planned_volume_completion_ratio"
+                ),
+        }
+
+    actual_duration_s = float(
+        actual.get(
+            "duration_s",
+            0,
+        )
+        or 0
+    )
+
+    planned_duration_s = float(
+        execution.get(
+            "planned_duration_s",
+            0,
+        )
+        or 0
+    )
+
+    unplanned_duration_s = round(
+        sum(
+            float(
+                item.get(
+                    "duration_s",
+                    0,
+                )
+                or 0
+            )
+            for item
+            in actual_sessions
+            if not item.get(
+                "planned_session_ids"
+            )
+        ),
+        3,
+    )
+
+    stimulus_counts = (
+        analysis.get(
+            "stimulus_status_counts",
+            {}
+        )
+        or {}
+    )
+
+    stimulus_aligned = int(
+        stimulus_counts.get(
+            "aligned",
+            0,
+        )
+    )
+
+    stimulus_above = int(
+        stimulus_counts.get(
+            "above_target",
+            0,
+        )
+    )
+
+    stimulus_below = int(
+        stimulus_counts.get(
+            "below_target",
+            0,
+        )
+    )
+
+    stimulus_mixed = int(
+        stimulus_counts.get(
+            "mixed",
+            0,
+        )
+    )
+
+    comparable_stimulus = (
+        stimulus_aligned
+        + stimulus_above
+        + stimulus_below
+        + stimulus_mixed
+    )
+
+    stimulus_deviation = (
+        stimulus_above
+        + stimulus_below
+        + stimulus_mixed
+    )
+
+    stimulus_not_evaluable = sum(
+        int(
+            stimulus_counts.get(
+                key,
+                0,
+            )
+        )
+        for key in (
+            "target_missing",
+            "target_invalid",
+            "performance_missing",
+            "interval_analysis_required",
+        )
+    )
+
+    duration_counts = (
+        analysis.get(
+            "duration_status_counts",
+            {}
+        )
+        or {}
+    )
+
+    duration_within = int(
+        duration_counts.get(
+            "within",
+            0,
+        )
+    )
+
+    duration_minor = int(
+        duration_counts.get(
+            "minor",
+            0,
+        )
+    )
+
+    duration_major = int(
+        duration_counts.get(
+            "major",
+            0,
+        )
+    )
+
+    comparable_duration = (
+        duration_within
+        + duration_minor
+        + duration_major
+    )
+
+    session_flags = (
+        analysis.get(
+            "session_flag_counts",
+            {}
+        )
+        or {}
+    )
+
+    actual_count = int(
+        actual.get(
+            "session_count",
+            0,
+        )
+        or 0
+    )
+
+    analyzed_count = int(
+        analysis.get(
+            "analyzed_session_count",
+            0,
+        )
+        or 0
+    )
+
+    planned_count = int(
+        execution.get(
+            "planned_session_count",
+            0,
+        )
+        or 0
+    )
+
+    return {
+        "schema_version":
+            "weekly-kpi-v1",
+
+        "period_status":
+            summary[
+                "week"
+            ][
+                "period_status"
+            ],
+
+        "execution": {
+            "session_completion_ratio":
+                execution.get(
+                    "session_completion_ratio"
+                ),
+
+            # Primary planned-volume KPI:
+            # planned TIME completed.
+            "planned_volume_completion_ratio":
+                execution.get(
+                    "planned_volume_completion_ratio"
+                ),
+
+            # Actual duration of matched
+            # sessions versus planned time.
+            "matched_actual_vs_planned_duration_ratio":
+                execution.get(
+                    "actual_vs_total_planned_duration_ratio"
+                ),
+
+            "KEY":
+                priority_kpis(
+                    "KEY"
+                ),
+
+            "SUPPORT":
+                priority_kpis(
+                    "SUPPORT"
+                ),
+
+            "EASY":
+                priority_kpis(
+                    "EASY"
+                ),
+        },
+
+        "load": {
+            "planned_duration_s":
+                planned_duration_s,
+
+            # Actual physical work occurring
+            # inside this athlete-local week.
+            "actual_week_duration_s":
+                actual_duration_s,
+
+            "actual_week_vs_planned_duration_ratio":
+                _ratio(
+                    actual_duration_s,
+                    planned_duration_s,
+                ),
+
+            "training_load":
+                actual.get(
+                    "training_load"
+                ),
+
+            "work_kj":
+                actual.get(
+                    "work_kj"
+                ),
+
+            "unplanned_session_count":
+                actual.get(
+                    "unplanned_session_count"
+                ),
+
+            "unplanned_duration_s":
+                unplanned_duration_s,
+
+            "unplanned_duration_share":
+                _ratio(
+                    unplanned_duration_s,
+                    actual_duration_s,
+                ),
+        },
+
+        "stimulus": {
+            "comparable_session_count":
+                comparable_stimulus,
+
+            "aligned_count":
+                stimulus_aligned,
+
+            "above_target_count":
+                stimulus_above,
+
+            "below_target_count":
+                stimulus_below,
+
+            "mixed_count":
+                stimulus_mixed,
+
+            "aligned_ratio":
+                _ratio(
+                    stimulus_aligned,
+                    comparable_stimulus,
+                ),
+
+            "deviation_ratio":
+                _ratio(
+                    stimulus_deviation,
+                    comparable_stimulus,
+                ),
+
+            "interval_analysis_required_count":
+                int(
+                    stimulus_counts.get(
+                        "interval_analysis_required",
+                        0,
+                    )
+                ),
+
+            "not_evaluable_count":
+                stimulus_not_evaluable,
+        },
+
+        "duration_execution": {
+            "comparable_session_count":
+                comparable_duration,
+
+            "within_count":
+                duration_within,
+
+            "minor_deviation_count":
+                duration_minor,
+
+            "major_deviation_count":
+                duration_major,
+
+            "within_ratio":
+                _ratio(
+                    duration_within,
+                    comparable_duration,
+                ),
+
+            "major_deviation_ratio":
+                _ratio(
+                    duration_major,
+                    comparable_duration,
+                ),
+        },
+
+        "subjective_response": {
+            "feedback_coverage":
+                feedback.get(
+                    "coverage"
+                ),
+
+            "rpe_above_target_count":
+                int(
+                    session_flags.get(
+                        "rpe_above_target",
+                        0,
+                    )
+                ),
+
+            "rpe_below_target_count":
+                int(
+                    session_flags.get(
+                        "rpe_below_target",
+                        0,
+                    )
+                ),
+
+            "high_leg_fatigue_count":
+                int(
+                    session_flags.get(
+                        "high_leg_fatigue",
+                        0,
+                    )
+                ),
+
+            # Descriptive context only.
+            "rpe_avg_descriptive":
+                feedback.get(
+                    "rpe_avg_descriptive"
+                ),
+
+            "leg_fatigue_avg_descriptive":
+                feedback.get(
+                    "leg_fatigue_avg_descriptive"
+                ),
+        },
+
+        "data_readiness": {
+            "analysis_coverage":
+                _ratio(
+                    analyzed_count,
+                    actual_count,
+                ),
+
+            "feedback_coverage":
+                feedback.get(
+                    "coverage"
+                ),
+
+            "planned_duration_coverage":
+                _ratio(
+                    int(
+                        execution.get(
+                            "planned_duration_known_count",
+                            0,
+                        )
+                        or 0
+                    ),
+                    planned_count,
+                ),
+
+            "training_load_coverage":
+                _ratio(
+                    int(
+                        actual.get(
+                            "training_load_known_count",
+                            0,
+                        )
+                        or 0
+                    ),
+                    actual_count,
+                ),
+
+            "work_kj_coverage":
+                _ratio(
+                    int(
+                        actual.get(
+                            "work_kj_known_count",
+                            0,
+                        )
+                        or 0
+                    ),
+                    actual_count,
+                ),
+        },
+
+        "schedule_context": {
+            "shifted_session_count":
+                schedule.get(
+                    "shifted_session_count",
+                    0,
+                ),
+
+            "max_abs_shift_days":
+                schedule.get(
+                    "max_abs_shift_days"
+                ),
+
+            # Explicit product rule:
+            # routine weekday swaps do not
+            # reduce compliance.
+            "weekday_shift_penalizes_compliance":
+                False,
+        },
+
+        "advanced_endurance": {
+            # These must later be calculated
+            # from suitable time-series /
+            # interval-level evidence.
+            #
+            # Do not infer them from whole-
+            # session average power, HR or IF.
+            "durability": {
+                "status":
+                    "not_available_in_current_analysis",
+            },
+
+            "decoupling": {
+                "status":
+                    "not_available_in_current_analysis",
+            },
+        },
     }
 
 
@@ -1153,6 +1682,12 @@ class WeeklyReviewService:
                 for item in actuals
             ],
         }
+
+        summary["coach_kpis"] = (
+            _build_coach_kpis(
+                summary=summary,
+            )
+        )
 
         review = self.db.scalar(
             select(

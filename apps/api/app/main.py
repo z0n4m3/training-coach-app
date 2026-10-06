@@ -10,6 +10,7 @@ from app.api.routes import (
     sessions,
     sync,
     training_setups,
+    weekly_reviews,
 )
 
 app = FastAPI(title="Training Coach API", version="0.1.0")
@@ -23,3 +24,4 @@ app.include_router(performance_proposals.router)
 app.include_router(performance_tests.router)
 app.include_router(cycling_equipment.router)
 app.include_router(training_setups.router)
+app.include_router(weekly_reviews.router)

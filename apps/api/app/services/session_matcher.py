@@ -2,29 +2,86 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from zoneinfo import (
+    ZoneInfo,
+    ZoneInfoNotFoundError,
+)
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.domain.sport import normalize_sport
 from app.models.entities import (
+    Athlete,
     CanonicalSession,
     CanonicalSessionSource,
     PlannedSession,
     SessionMatch,
     SourceActivity,
+    TrainingWeek,
+    User,
 )
 
 
 AUTO_MATCH_THRESHOLD = 0.82
 AUTO_MATCH_MARGIN = 0.08
-MAX_TIME_DELTA_S = 8 * 60 * 60
+
+# Exact weekday is not a compliance rule.
+# Duration / planned volume is the
+# dominant heuristic signal.
+DURATION_WEIGHT = 0.80
+DAY_WEIGHT = 0.15
+CLOCK_WEIGHT = 0.05
+
+# Duration within roughly +/-10%
+# is treated as essentially equivalent
+# for session identity.
+DURATION_FULL_SCORE_RATIO = 0.90
+
+# Clock time is only a weak secondary
+# signal.
+CLOCK_SIGNAL_WINDOW_S = 8 * 60 * 60
 
 
 def _utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def _duration_similarity(
+    planned_s: float | None,
+    actual_s: float | None,
+) -> tuple[
+    float | None,
+    float | None,
+]:
+    if (
+        planned_s is None
+        or actual_s is None
+        or planned_s <= 0
+        or actual_s <= 0
+    ):
+        return None, None
+
+    ratio = min(
+        planned_s,
+        actual_s,
+    ) / max(
+        planned_s,
+        actual_s,
+    )
+
+    score = min(
+        1.0,
+        ratio
+        / DURATION_FULL_SCORE_RATIO,
+    )
+
+    return (
+        round(ratio, 6),
+        round(score, 6),
+    )
 
 
 class SessionMatcher:
@@ -80,6 +137,61 @@ class SessionMatcher:
             for plan in plans
             if plan.id not in matched_planned_ids
         ]
+
+        if not plans:
+            return result
+
+        athlete = self.db.get(
+            Athlete,
+            athlete_id,
+        )
+
+        if athlete is None:
+            raise LookupError(
+                "Athlete not found"
+            )
+
+        user = self.db.get(
+            User,
+            athlete.user_id,
+        )
+
+        if user is None:
+            raise LookupError(
+                "User not found"
+            )
+
+        try:
+            athlete_zone = ZoneInfo(
+                user.timezone
+            )
+
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(
+                "Invalid athlete timezone"
+            ) from exc
+
+        week_ids = {
+            plan.training_week_id
+            for plan in plans
+        }
+
+        weeks = self.db.scalars(
+            select(
+                TrainingWeek
+            ).where(
+                TrainingWeek.athlete_id
+                == athlete_id,
+                TrainingWeek.id.in_(
+                    week_ids
+                ),
+            )
+        ).all()
+
+        week_by_id = {
+            week.id: week
+            for week in weeks
+        }
 
         # Plans carrying an Intervals event ID get first access to
         # canonicals because this is stronger evidence than heuristics.
@@ -182,6 +294,16 @@ class SessionMatcher:
                     result["ambiguous"] += 1
                     continue
 
+            week = week_by_id.get(
+                plan.training_week_id
+            )
+
+            if week is None:
+                result[
+                    "no_candidate"
+                ] += 1
+                continue
+
             scored: list[
                 tuple[
                     float,
@@ -196,8 +318,11 @@ class SessionMatcher:
                 ]
 
                 candidate = self._score(
-                    plan,
-                    canonical,
+                    plan=plan,
+                    canonical=canonical,
+                    week=week,
+                    athlete_zone=
+                        athlete_zone,
                 )
 
                 if candidate is not None:
@@ -254,70 +379,228 @@ class SessionMatcher:
 
     @staticmethod
     def _score(
+        *,
         plan: PlannedSession,
         canonical: CanonicalSession,
-    ) -> tuple[float, dict] | None:
-        planned_sport = normalize_sport(plan.sport)
-        actual_sport = normalize_sport(canonical.sport)
+        week: TrainingWeek,
+        athlete_zone: ZoneInfo,
+    ) -> tuple[
+        float,
+        dict,
+    ] | None:
+        planned_sport = (
+            normalize_sport(
+                plan.sport
+            )
+        )
+
+        actual_sport = (
+            normalize_sport(
+                canonical.sport
+            )
+        )
 
         if (
             not planned_sport
-            or planned_sport != actual_sport
+            or planned_sport
+            != actual_sport
         ):
             return None
 
-        delta_s = abs(
+        planned_utc = _utc(
+            plan.planned_start_at
+        )
+
+        actual_utc = _utc(
+            canonical.start_at
+        )
+
+        planned_local = (
+            planned_utc.astimezone(
+                athlete_zone
+            )
+        )
+
+        actual_local = (
+            actual_utc.astimezone(
+                athlete_zone
+            )
+        )
+
+        planned_date = (
+            planned_local.date()
+        )
+
+        actual_date = (
+            actual_local.date()
+        )
+
+        # Heuristic matching may move
+        # a session between weekdays,
+        # but never across TrainingWeek
+        # boundaries.
+        #
+        # Explicit Intervals event pairing
+        # remains allowed because it is
+        # stronger evidence.
+        if not (
+            week.start_date
+            <= actual_date
+            <= week.end_date
+        ):
+            return None
+
+        day_shift = (
+            actual_date
+            - planned_date
+        ).days
+
+        week_span_days = max(
+            1,
             (
-                _utc(canonical.start_at)
-                - _utc(plan.planned_start_at)
+                week.end_date
+                - week.start_date
+            ).days
+            + 1,
+        )
+
+        day_score = max(
+            0.0,
+            1.0
+            - abs(day_shift)
+            / week_span_days,
+        )
+
+        # Compare time of day separately
+        # from weekday. Moving Tuesday
+        # 17:00 to Wednesday 17:00 should
+        # keep a strong clock signal.
+        planned_clock_s = (
+            planned_local.hour
+            * 3600
+            + planned_local.minute
+            * 60
+            + planned_local.second
+        )
+
+        actual_clock_s = (
+            actual_local.hour
+            * 3600
+            + actual_local.minute
+            * 60
+            + actual_local.second
+        )
+
+        clock_delta_s = abs(
+            actual_clock_s
+            - planned_clock_s
+        )
+
+        clock_delta_s = min(
+            clock_delta_s,
+            86400
+            - clock_delta_s,
+        )
+
+        clock_score = max(
+            0.0,
+            1.0
+            - clock_delta_s
+            / CLOCK_SIGNAL_WINDOW_S,
+        )
+
+        (
+            duration_ratio,
+            duration_score,
+        ) = _duration_similarity(
+            plan.planned_duration_s,
+            canonical.duration_s,
+        )
+
+        if duration_score is not None:
+            score = (
+                DURATION_WEIGHT
+                * duration_score
+                + DAY_WEIGHT
+                * day_score
+                + CLOCK_WEIGHT
+                * clock_score
+            )
+
+        else:
+            # Without duration we remain
+            # conservative because weekday
+            # alone is weak evidence.
+            score = (
+                0.75 * day_score
+                + 0.25 * clock_score
+            )
+
+        absolute_start_delta_s = abs(
+            (
+                actual_utc
+                - planned_utc
             ).total_seconds()
         )
 
-        if delta_s > MAX_TIME_DELTA_S:
-            return None
-
-        time_score = max(
-            0.0,
-            1.0
-            - delta_s / MAX_TIME_DELTA_S,
+        score = round(
+            score,
+            6,
         )
 
-        duration_score = None
-
-        if (
-            plan.planned_duration_s
-            and canonical.duration_s
-            and plan.planned_duration_s > 0
-            and canonical.duration_s > 0
-        ):
-            duration_score = min(
-                plan.planned_duration_s,
-                canonical.duration_s,
-            ) / max(
-                plan.planned_duration_s,
-                canonical.duration_s,
-            )
-
-            score = (
-                0.65 * time_score
-                + 0.35 * duration_score
-            )
-        else:
-            score = time_score
-
-        score = round(score, 6)
-
         return score, {
-            "planned_sport": planned_sport,
-            "actual_sport": actual_sport,
-            "start_delta_s": round(delta_s, 3),
-            "time_score": round(time_score, 6),
-            "duration_score": (
-                round(duration_score, 6)
-                if duration_score is not None
-                else None
-            ),
-            "threshold": AUTO_MATCH_THRESHOLD,
+            "planned_sport":
+                planned_sport,
+            "actual_sport":
+                actual_sport,
+            "training_week_id":
+                str(week.id),
+            "schedule_policy":
+                "flexible_within_week",
+            "planned_local_date":
+                planned_date.isoformat(),
+            "actual_local_date":
+                actual_date.isoformat(),
+            "day_shift":
+                day_shift,
+            "schedule_shifted":
+                day_shift != 0,
+            "absolute_start_delta_s":
+                round(
+                    absolute_start_delta_s,
+                    3,
+                ),
+            "clock_delta_s":
+                round(
+                    clock_delta_s,
+                    3,
+                ),
+            "day_score":
+                round(
+                    day_score,
+                    6,
+                ),
+            "clock_score":
+                round(
+                    clock_score,
+                    6,
+                ),
+            "duration_ratio":
+                duration_ratio,
+            "duration_score":
+                duration_score,
+            "weights": {
+                "duration":
+                    DURATION_WEIGHT,
+                "day":
+                    DAY_WEIGHT,
+                "clock":
+                    CLOCK_WEIGHT,
+            },
+            "threshold":
+                AUTO_MATCH_THRESHOLD,
+            "ambiguity_margin":
+                AUTO_MATCH_MARGIN,
         }
 
     def _create_match(

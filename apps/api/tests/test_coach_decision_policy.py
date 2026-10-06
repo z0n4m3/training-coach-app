@@ -278,6 +278,10 @@ def test_rebuild_after_major_training_interruption():
         "session_completion_ratio"
     ] = 0.0
 
+    kpis["load"][
+        "actual_week_vs_planned_duration_ratio"
+    ] = 0.40
+
     result = evaluate_weekly_decision(
         kpis
     )
@@ -483,4 +487,49 @@ def test_distance_is_not_a_decision_input():
             "distance_used_for_compliance"
         ]
         is False
+    )
+
+
+def test_unplanned_training_volume_redirects_instead_of_rebuild():
+    kpis = good_week()
+
+    # Only a small part of the original
+    # plan was matched/completed.
+    kpis["execution"][
+        "planned_volume_completion_ratio"
+    ] = 0.40
+
+    kpis["execution"]["KEY"][
+        "session_completion_ratio"
+    ] = 0.0
+
+    # But the athlete still trained a
+    # normal total volume, mostly outside
+    # the planned sessions.
+    kpis["load"][
+        "actual_week_vs_planned_duration_ratio"
+    ] = 1.0
+
+    kpis["load"][
+        "unplanned_duration_s"
+    ] = 21600
+
+    kpis["load"][
+        "unplanned_duration_share"
+    ] = 0.60
+
+    result = evaluate_weekly_decision(
+        kpis
+    )
+
+    assert result["decision"] == "REDIRECT"
+
+    assert (
+        result["selected_rule"]
+        == "training_direction_mismatch"
+    )
+
+    assert (
+        "material_unplanned_training_share"
+        in result["reasons"]
     )

@@ -18,9 +18,11 @@ DECISION_VERSION = (
 # evidence are available.
 
 REBUILD_VOLUME_THRESHOLD = 0.50
+REBUILD_ACTUAL_WEEK_MAX = 0.65
 
 HOLD_VOLUME_THRESHOLD = 0.85
 
+REDIRECT_ACTUAL_WEEK_MIN = 0.80
 REDIRECT_UNPLANNED_SHARE = 0.30
 REDIRECT_MIN_UNPLANNED_S = 1800
 REDIRECT_STIMULUS_DEVIATION = 0.50
@@ -517,6 +519,10 @@ def evaluate_weekly_decision(
     if (
         volume_completion
         < REBUILD_VOLUME_THRESHOLD
+        and _lt(
+            actual_week_ratio,
+            REBUILD_ACTUAL_WEEK_MAX,
+        )
     ):
         return {
             **base,
@@ -535,6 +541,10 @@ def evaluate_weekly_decision(
         key_planned > 0
         and key_completion == 0
         and volume_completion < 0.65
+        and _lt(
+            actual_week_ratio,
+            REBUILD_ACTUAL_WEEK_MAX,
+        )
     ):
         return {
             **base,
@@ -620,7 +630,10 @@ def evaluate_weekly_decision(
     )
 
     material_unplanned_training = (
-        volume_completion >= 0.80
+        _gte(
+            actual_week_ratio,
+            REDIRECT_ACTUAL_WEEK_MIN,
+        )
         and _gte(
             unplanned_share,
             REDIRECT_UNPLANNED_SHARE,

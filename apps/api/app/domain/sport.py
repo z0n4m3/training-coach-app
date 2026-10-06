@@ -15,6 +15,13 @@ def normalize_sport(value: str | None) -> str:
     ):
         return "cycling"
 
+    if (
+        "strength" in key
+        or "weight" in key
+        or "gym" in key
+    ):
+        return "strength"
+
     if "run" in key:
         return "running"
 

@@ -26,6 +26,7 @@ from app.models.entities import (
 )
 from app.services.weekly_review_service import (
     WeeklyReviewService,
+    _build_coach_kpis,
 )
 
 
@@ -772,5 +773,439 @@ def test_weekly_review_rebuild_is_idempotent():
 
     assert (
         second["review_version"]
-        == "deterministic-weekly-v1"
+        == "deterministic-weekly-v2"
+    )
+
+
+def test_weekly_coach_kpis_are_decision_inputs():
+    summary = {
+        "week": {
+            "period_status":
+                "complete",
+        },
+
+        "plan_execution": {
+            "planned_session_count":
+                4,
+            "matched_planned_count":
+                3,
+            "unmatched_planned_count":
+                1,
+            "session_completion_ratio":
+                0.75,
+
+            "planned_duration_s":
+                14400,
+            "planned_duration_known_count":
+                4,
+
+            "completed_planned_duration_s":
+                12600,
+            "planned_volume_completion_ratio":
+                0.875,
+
+            "matched_actual_duration_s":
+                13200,
+            "actual_vs_total_planned_duration_ratio":
+                0.9167,
+
+            "by_priority": {
+                "KEY": {
+                    "planned": 1,
+                    "matched": 1,
+                    "planned_duration_s": 7200,
+                    "completed_planned_duration_s": 7200,
+                    "planned_volume_completion_ratio": 1.0,
+                },
+                "SUPPORT": {
+                    "planned": 2,
+                    "matched": 2,
+                    "planned_duration_s": 5400,
+                    "completed_planned_duration_s": 5400,
+                    "planned_volume_completion_ratio": 1.0,
+                },
+                "EASY": {
+                    "planned": 1,
+                    "matched": 0,
+                    "planned_duration_s": 1800,
+                    "completed_planned_duration_s": 0,
+                    "planned_volume_completion_ratio": 0.0,
+                },
+            },
+        },
+
+        "schedule": {
+            "shifted_session_count":
+                2,
+            "max_abs_shift_days":
+                2,
+        },
+
+        "actual_load_window": {
+            "session_count":
+                4,
+            "unplanned_session_count":
+                1,
+            "duration_s":
+                15000,
+
+            "training_load":
+                220,
+            "training_load_known_count":
+                4,
+
+            "work_kj":
+                1800,
+            "work_kj_known_count":
+                3,
+        },
+
+        "analysis": {
+            "analyzed_session_count":
+                3,
+
+            "duration_status_counts": {
+                "within": 2,
+                "minor": 1,
+            },
+
+            "stimulus_status_counts": {
+                "aligned": 1,
+                "above_target": 1,
+                "interval_analysis_required": 1,
+            },
+
+            "session_flag_counts": {
+                "rpe_above_target": 1,
+                "high_leg_fatigue": 1,
+            },
+        },
+
+        "feedback": {
+            "coverage":
+                0.75,
+            "rpe_avg_descriptive":
+                4.7,
+            "leg_fatigue_avg_descriptive":
+                2.7,
+        },
+
+        "actual_sessions": [
+            {
+                "duration_s": 7200,
+                "planned_session_ids": [
+                    "key"
+                ],
+            },
+            {
+                "duration_s": 3600,
+                "planned_session_ids": [
+                    "support-1"
+                ],
+            },
+            {
+                "duration_s": 2400,
+                "planned_session_ids": [
+                    "support-2"
+                ],
+            },
+            {
+                "duration_s": 1800,
+                "planned_session_ids": [],
+            },
+        ],
+    }
+
+    kpis = _build_coach_kpis(
+        summary=summary
+    )
+
+    assert (
+        kpis["schema_version"]
+        == "weekly-kpi-v1"
+    )
+
+    assert (
+        kpis["execution"]["KEY"][
+            "session_completion_ratio"
+        ]
+        == 1.0
+    )
+
+    assert (
+        kpis["execution"]["EASY"][
+            "session_completion_ratio"
+        ]
+        == 0.0
+    )
+
+    assert (
+        kpis["load"][
+            "actual_week_vs_planned_duration_ratio"
+        ]
+        == round(
+            15000 / 14400,
+            4,
+        )
+    )
+
+    assert (
+        kpis["load"][
+            "unplanned_duration_s"
+        ]
+        == 1800
+    )
+
+    assert (
+        kpis["load"][
+            "unplanned_duration_share"
+        ]
+        == 0.12
+    )
+
+    assert (
+        kpis["stimulus"][
+            "comparable_session_count"
+        ]
+        == 2
+    )
+
+    assert (
+        kpis["stimulus"][
+            "aligned_ratio"
+        ]
+        == 0.5
+    )
+
+    assert (
+        kpis["stimulus"][
+            "interval_analysis_required_count"
+        ]
+        == 1
+    )
+
+    assert (
+        kpis["duration_execution"][
+            "within_ratio"
+        ]
+        == round(
+            2 / 3,
+            4,
+        )
+    )
+
+    assert (
+        kpis["subjective_response"][
+            "rpe_above_target_count"
+        ]
+        == 1
+    )
+
+    assert (
+        kpis["subjective_response"][
+            "high_leg_fatigue_count"
+        ]
+        == 1
+    )
+
+    assert (
+        kpis["data_readiness"][
+            "analysis_coverage"
+        ]
+        == 0.75
+    )
+
+    assert (
+        kpis["data_readiness"][
+            "work_kj_coverage"
+        ]
+        == 0.75
+    )
+
+    assert (
+        kpis["schedule_context"][
+            "weekday_shift_penalizes_compliance"
+        ]
+        is False
+    )
+
+    assert (
+        kpis["advanced_endurance"][
+            "durability"
+        ]["status"]
+        == "not_available_in_current_analysis"
+    )
+
+    assert (
+        kpis["advanced_endurance"][
+            "decoupling"
+        ]["status"]
+        == "not_available_in_current_analysis"
+    )
+
+    # Distance is deliberately excluded
+    # from Coach KPI decision inputs.
+    assert (
+        "distance"
+        not in str(kpis).lower()
+    )
+
+    # This layer supplies evidence only.
+    assert "decision" not in kpis
+
+
+def test_rebuilt_weekly_review_contains_coach_kpis():
+    db = make_db()
+
+    (
+        _,
+        athlete,
+        week,
+    ) = make_week(db)
+
+    plan = add_plan(
+        db,
+        athlete,
+        week,
+        name="END",
+        sport="cycling",
+        priority="KEY",
+        day=29,
+        duration_s=7200,
+    )
+
+    actual = add_actual(
+        db,
+        athlete,
+        fingerprint=
+            "weekly-kpi-end",
+        sport="Ride",
+        start_at=datetime(
+            2026,
+            9,
+            30,
+            16,
+            0,
+            tzinfo=timezone.utc,
+        ),
+        duration_s=7200,
+        training_load=100,
+        work_kj=1200,
+        distance_m=50000,
+    )
+
+    db.add(
+        SessionMatch(
+            athlete_id=athlete.id,
+            planned_session_id=
+                plan.id,
+            canonical_session_id=
+                actual.id,
+            match_method=
+                "auto_score",
+            match_score=0.95,
+            match_evidence={
+                "schedule_shifted":
+                    True,
+                "day_shift": 1,
+            },
+        )
+    )
+
+    db.add(
+        SessionAnalysis(
+            athlete_id=athlete.id,
+            canonical_session_id=
+                actual.id,
+            planned_session_id=
+                plan.id,
+            analysis_version=
+                "deterministic-v6",
+            classification=
+                "matched",
+            evidence={
+                "duration_assessment": {
+                    "status": "within",
+                },
+                "stimulus_assessment": {
+                    "status": "aligned",
+                },
+                "subjective_response": {
+                    "status": "available",
+                },
+            },
+            flags=[],
+        )
+    )
+
+    db.add(
+        SessionFeedback(
+            athlete_id=athlete.id,
+            canonical_session_id=
+                actual.id,
+            rpe=3,
+            leg_fatigue=2,
+            comment="Good",
+            custom_metrics={},
+        )
+    )
+
+    db.commit()
+
+    review = WeeklyReviewService(
+        db
+    ).rebuild(
+        athlete_id=athlete.id,
+        week_id=week.id,
+    )
+
+    kpis = review["summary"][
+        "coach_kpis"
+    ]
+
+    assert (
+        review["review_version"]
+        == "deterministic-weekly-v2"
+    )
+
+    assert (
+        kpis["execution"]["KEY"][
+            "session_completion_ratio"
+        ]
+        == 1.0
+    )
+
+    assert (
+        kpis["execution"][
+            "planned_volume_completion_ratio"
+        ]
+        == 1.0
+    )
+
+    assert (
+        kpis["load"][
+            "actual_week_vs_planned_duration_ratio"
+        ]
+        == 1.0
+    )
+
+    assert (
+        kpis["stimulus"][
+            "aligned_ratio"
+        ]
+        == 1.0
+    )
+
+    assert (
+        kpis["data_readiness"][
+            "analysis_coverage"
+        ]
+        == 1.0
+    )
+
+    assert (
+        kpis["schedule_context"][
+            "shifted_session_count"
+        ]
+        == 1
     )

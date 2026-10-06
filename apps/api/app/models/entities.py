@@ -1237,3 +1237,71 @@ class SessionFeedback(Base):
         default=utcnow,
         onupdate=utcnow,
     )
+
+
+class WeeklyReview(Base):
+    __tablename__ = "weekly_reviews"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "training_week_id",
+            name="uq_weekly_review_training_week",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    athlete_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(
+            "athletes.id",
+            ondelete="CASCADE",
+        ),
+        index=True,
+    )
+
+    training_week_id: Mapped[
+        uuid.UUID
+    ] = mapped_column(
+        ForeignKey(
+            "training_weeks.id",
+            ondelete="CASCADE",
+        ),
+        index=True,
+    )
+
+    review_version: Mapped[str] = mapped_column(
+        String(64),
+    )
+
+    summary: Mapped[
+        dict[str, Any]
+    ] = mapped_column(
+        JSON,
+        default=dict,
+    )
+
+    flags: Mapped[
+        list[Any]
+    ] = mapped_column(
+        JSON,
+        default=list,
+    )
+
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )

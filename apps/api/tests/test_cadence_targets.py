@@ -248,3 +248,16 @@ def test_plan_rejects_invalid_cadence_target():
         PlannedSessionCreate(
             **payload
         )
+
+
+def test_self_selected_cannot_define_intent():
+    with pytest.raises(
+        ValueError,
+        match="cannot define rpm bounds or intent",
+    ):
+        normalize_cadence_target(
+            {
+                "mode": "self_selected",
+                "intent": "low_cadence",
+            }
+        )

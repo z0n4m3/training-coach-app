@@ -62,10 +62,11 @@ def normalize_cadence_target(
         if (
             "min_rpm" in raw
             or "max_rpm" in raw
+            or "intent" in raw
         ):
             raise ValueError(
                 "self_selected cadence "
-                "cannot define rpm bounds"
+                "cannot define rpm bounds or intent"
             )
 
         return {

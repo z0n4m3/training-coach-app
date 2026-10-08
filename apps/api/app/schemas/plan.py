@@ -6,6 +6,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.domain.cadence import (
+    validate_cadence_targets,
+)
+
 
 class SeasonCreate(BaseModel):
     athlete_id: uuid.UUID
@@ -72,3 +76,12 @@ class PlannedSessionCreate(BaseModel):
     workout_structure: dict[str, Any] = Field(default_factory=dict)
 
     notes: str | None = None
+
+    @model_validator(mode="after")
+    def validate_cadence(self):
+        validate_cadence_targets(
+            targets=self.targets,
+            workout_structure=self.workout_structure,
+        )
+
+        return self

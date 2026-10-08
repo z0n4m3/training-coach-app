@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from app.api.routes import (
+    coach_decisions,
     cycling_equipment,
     dev,
     health,
@@ -15,6 +16,7 @@ from app.api.routes import (
 
 app = FastAPI(title="Training Coach API", version="0.1.0")
 app.include_router(health.router)
+app.include_router(coach_decisions.router)
 app.include_router(dev.router)
 app.include_router(sync.router)
 app.include_router(sessions.router)

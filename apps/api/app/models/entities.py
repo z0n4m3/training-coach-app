@@ -1305,3 +1305,117 @@ class WeeklyReview(Base):
         default=utcnow,
         onupdate=utcnow,
     )
+
+
+class CoachDecision(Base):
+    __tablename__ = "coach_decisions"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "training_week_id",
+            "decision_version",
+            "input_hash",
+            name="uq_coach_decision_week_version_input",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    athlete_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(
+            "athletes.id",
+            ondelete="CASCADE",
+        ),
+        index=True,
+    )
+
+    training_week_id: Mapped[
+        uuid.UUID
+    ] = mapped_column(
+        ForeignKey(
+            "training_weeks.id",
+            ondelete="CASCADE",
+        ),
+        index=True,
+    )
+
+    weekly_review_id: Mapped[
+        uuid.UUID
+    ] = mapped_column(
+        ForeignKey(
+            "weekly_reviews.id",
+            ondelete="CASCADE",
+        ),
+        index=True,
+    )
+
+    decision_version: Mapped[str] = mapped_column(
+        String(64),
+    )
+
+    input_hash: Mapped[str] = mapped_column(
+        String(64),
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(32),
+    )
+
+    decision: Mapped[
+        str | None
+    ] = mapped_column(
+        String(32),
+        nullable=True,
+    )
+
+    confidence: Mapped[str] = mapped_column(
+        String(16),
+    )
+
+    selected_rule: Mapped[str] = mapped_column(
+        String(64),
+    )
+
+    reasons: Mapped[
+        list[Any]
+    ] = mapped_column(
+        JSON,
+        default=list,
+    )
+
+    evidence: Mapped[
+        dict[str, Any]
+    ] = mapped_column(
+        JSON,
+        default=dict,
+    )
+
+    constraints: Mapped[
+        dict[str, Any]
+    ] = mapped_column(
+        JSON,
+        default=dict,
+    )
+
+    source_review_version: Mapped[str] = mapped_column(
+        String(64),
+    )
+
+    source_review_generated_at: Mapped[
+        datetime
+    ] = mapped_column(
+        DateTime(timezone=True),
+    )
+
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+    )
